@@ -47,6 +47,15 @@ jobs:
           mkdir -p ../Frameworks
           mv Libbox.xcframework ../Frameworks/
 
+      - name: Download rule-sets
+        run: |
+          cd BreezeKit/Resources/rules
+          for name in geosite-category-ads-all geosite-category-ru geosite-yandex geosite-vk; do
+            curl -fsSL --retry 3 -o $name.srs https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/$name.srs
+          done
+          curl -fsSL --retry 3 -o geoip-ru.srs https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs
+          ls -la
+
       - name: Generate project
         run: |
           brew install xcodegen

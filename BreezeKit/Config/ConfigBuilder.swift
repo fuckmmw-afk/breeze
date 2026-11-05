@@ -6,9 +6,13 @@ public enum ConfigBuilder {
     public static let autoTag = "auto"
     public static let directTag = "direct"
 
-    private static let ruleSetBase = "https://raw.githubusercontent.com/SagerNet"
+    /// Rule-set files shipped inside BreezeKit.framework (downloaded at build time),
+    /// so the tunnel never has to fetch anything before it starts.
+    public static var bundledRuleSets: URL? {
+        Bundle(for: BundleToken.self).url(forResource: "rules", withExtension: nil)
+    }
 
-    public static func build(servers: [ServerNode], selected: String?, settings: AppSettings) -> String {
+    public static func build(servers: [ServerNode], selected: String?, settings: AppSettings, ruleSetDirectory: URL? = bundledRuleSets) -> String {
         var outbounds: [JSONValue] = []
         let tags = servers.map(\.name)
 
@@ -57,10 +61,10 @@ public enum ConfigBuilder {
                 "level": .string(settings.logLevel),
                 "timestamp": .bool(true),
             ]),
-            "dns": dns(settings),
+            "dns": dns(settings, ruleSets: availableRuleSets(ruleSetDirectory)),
             "inbounds": .array([tun(settings)]),
             "outbounds": .array(outbounds),
-            "route": route(settings),
+            "route": route(settings, ruleSets: availableRuleSets(ruleSetDirectory)),
             "experimental": .object([
                 "cache_file": .object([
                     "enabled": .bool(true),
@@ -90,22 +94,38 @@ public enum ConfigBuilder {
         ])
     }
 
-    private static func dns(_ settings: AppSettings) -> JSONValue {
+    private static func availableRuleSets(_ directory: URL?) -> [String: String] {
+        guard let directory else { return [:] }
+        var result: [String: String] = [:]
+        let names = ["geosite-category-ads-all", "geosite-category-ru", "geosite-yandex", "geosite-vk", "geoip-ru"]
+        for name in names {
+            let url = directory.appendingPathComponent("\(name).srs")
+            if FileManager.default.fileExists(atPath: url.path) {
+                result[name] = url.path
+            }
+        }
+        return result
+    }
+
+    private static func dns(_ settings: AppSettings, ruleSets: [String: String]) -> JSONValue {
         var rules: [JSONValue] = [
             .object(["clash_mode": .string(RoutingMode.direct.rawValue), "server": .string("dns-direct")]),
             .object(["clash_mode": .string(RoutingMode.global.rawValue), "server": .string("dns-remote")]),
         ]
-        if settings.blockAds {
+        if settings.blockAds, ruleSets["geosite-category-ads-all"] != nil {
             rules.append(.object([
                 "rule_set": .array([.string("geosite-category-ads-all")]),
                 "action": .string("reject"),
             ]))
         }
         if settings.bypassRussia {
-            rules.append(.object([
-                "rule_set": .array([.string("geosite-category-ru"), .string("geosite-yandex"), .string("geosite-vk")]),
-                "server": .string("dns-direct"),
-            ]))
+            let sites = ["geosite-category-ru", "geosite-yandex", "geosite-vk"].filter { ruleSets[$0] != nil }
+            if !sites.isEmpty {
+                rules.append(.object([
+                    "rule_set": .array(sites.map { .string($0) }),
+                    "server": .string("dns-direct"),
+                ]))
+            }
             rules.append(.object([
                 "domain_suffix": .array([".ru", ".su", ".xn--p1ai", ".by"]),
                 "server": .string("dns-direct"),
@@ -132,7 +152,7 @@ public enum ConfigBuilder {
         ])
     }
 
-    private static func route(_ settings: AppSettings) -> JSONValue {
+    private static func route(_ settings: AppSettings, ruleSets available: [String: String]) -> JSONValue {
         var rules: [JSONValue] = [
             .object(["action": .string("sniff")]),
             .object(["protocol": .string("dns"), "action": .string("hijack-dns")]),
@@ -140,29 +160,36 @@ public enum ConfigBuilder {
             .object(["clash_mode": .string(RoutingMode.direct.rawValue), "outbound": .string(directTag)]),
             .object(["clash_mode": .string(RoutingMode.global.rawValue), "outbound": .string(selectorTag)]),
         ]
-        var ruleSets: [JSONValue] = []
-        if settings.blockAds {
+        var used: [String] = []
+        if settings.blockAds, available["geosite-category-ads-all"] != nil {
             rules.append(.object([
                 "rule_set": .array([.string("geosite-category-ads-all")]),
                 "action": .string("reject"),
             ]))
-            ruleSets.append(remoteRuleSet("geosite-category-ads-all", repo: "sing-geosite"))
+            used.append("geosite-category-ads-all")
         }
         if settings.bypassRussia {
             rules.append(.object([
                 "domain_suffix": .array([".ru", ".su", ".xn--p1ai", ".by"]),
                 "outbound": .string(directTag),
             ]))
-            rules.append(.object([
-                "rule_set": .array([
-                    .string("geosite-category-ru"), .string("geosite-yandex"), .string("geosite-vk"), .string("geoip-ru"),
-                ]),
-                "outbound": .string(directTag),
-            ]))
-            ruleSets.append(remoteRuleSet("geosite-category-ru", repo: "sing-geosite"))
-            ruleSets.append(remoteRuleSet("geosite-yandex", repo: "sing-geosite"))
-            ruleSets.append(remoteRuleSet("geosite-vk", repo: "sing-geosite"))
-            ruleSets.append(remoteRuleSet("geoip-ru", repo: "sing-geoip"))
+            let russian = ["geosite-category-ru", "geosite-yandex", "geosite-vk", "geoip-ru"].filter { available[$0] != nil }
+            if !russian.isEmpty {
+                rules.append(.object([
+                    "rule_set": .array(russian.map { .string($0) }),
+                    "outbound": .string(directTag),
+                ]))
+                used.append(contentsOf: russian)
+            }
+        }
+        let ruleSets: [JSONValue] = used.compactMap { tag in
+            guard let path = available[tag] else { return nil }
+            return .object([
+                "type": .string("local"),
+                "tag": .string(tag),
+                "format": .string("binary"),
+                "path": .string(path),
+            ])
         }
         var route: [String: JSONValue] = [
             "rules": .array(rules),
@@ -179,15 +206,6 @@ public enum ConfigBuilder {
         return .object(route)
     }
 
-    private static func remoteRuleSet(_ tag: String, repo: String) -> JSONValue {
-        .object([
-            "type": .string("remote"),
-            "tag": .string(tag),
-            "format": .string("binary"),
-            "url": .string("\(ruleSetBase)/\(repo)/rule-set/\(tag).srs"),
-            // download through the proxy: raw.githubusercontent.com is often throttled
-            "download_detour": .string(selectorTag),
-            "update_interval": .string("72h"),
-        ])
-    }
 }
+
+private final class BundleToken {}

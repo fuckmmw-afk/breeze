@@ -12,6 +12,8 @@ public final class TunnelManager: ObservableObject {
     @Published public private(set) var isBusy = false
 
     private var manager: NETunnelProviderManager?
+    private var currentGroup: String?
+    private var reachedConnected = false
     private var observer: NSObjectProtocol?
 
     public var isConnected: Bool { status == .connected }
@@ -102,17 +104,41 @@ public final class TunnelManager: ObservableObject {
         }
         status = newStatus
         connectedDate = newStatus == .connected ? manager.connection.connectedDate : nil
-        if newStatus == .disconnected, previous == .connecting || previous == .connected || previous == .reasserting {
-            Task { await fetchDisconnectError(previous: previous) }
+        if newStatus == .connected {
+            reachedConnected = true
+        }
+        if newStatus == .disconnected, previous != .disconnected, previous != .invalid {
+            let failedStart = !reachedConnected
+            reachedConnected = false
+            Task { await fetchDisconnectError(failedStart: failedStart) }
         }
     }
 
-    private func fetchDisconnectError(previous: NEVPNStatus) async {
+    /// Last "FAILED" line the extension left in the shared diagnostics log.
+    private func extensionFailure() -> String? {
+        guard let text = DiagnosticLog.read(DiagnosticLog.fileName, group: currentGroup ?? SharedGroup.discover()) else { return nil }
+        guard let line = text.split(separator: "\n").last(where: { $0.contains("FAILED") }),
+              let range = line.range(of: "FAILED ")
+        else { return nil }
+        var message = String(line[range.upperBound...])
+        if message.count > 500 { message = String(message.prefix(500)) + "…" }
+        if message.contains("i/o timeout") || message.contains("timed out") {
+            return "Сервер не отвечает. Выберите другой сервер.\n\n" + message
+        }
+        return message
+    }
+
+    private func fetchDisconnectError(failedStart: Bool) async {
+        if failedStart, let failure = extensionFailure() {
+            EventLog.shared.add("extension failure: \(failure)")
+            lastError = failure
+            return
+        }
         guard let connection = manager?.connection else { return }
         do {
             try await connection.fetchLastDisconnectError()
             EventLog.shared.add("last disconnect error: none")
-            if previous == .connecting {
+            if failedStart {
                 lastError = "Туннель не запустился. Подробности: Настройки → Журнал."
             }
         } catch {
@@ -152,6 +178,8 @@ public final class TunnelManager: ObservableObject {
 
     public func start(config: String, runtime: TunnelRuntimeOptions, group: String? = nil) async {
         lastError = nil
+        currentGroup = group
+        reachedConnected = false
         isBusy = true
         defer { isBusy = false }
         do {
