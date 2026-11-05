@@ -89,24 +89,27 @@ public final class TunnelManager: ObservableObject {
         status = newStatus
         connectedDate = newStatus == .connected ? manager.connection.connectedDate : nil
         if newStatus == .disconnected, previous == .connecting || previous == .connected || previous == .reasserting {
-            Task { await fetchDisconnectError() }
+            Task { await fetchDisconnectError(previous: previous) }
         }
     }
 
-    private func fetchDisconnectError() async {
+    private func fetchDisconnectError(previous: NEVPNStatus) async {
         guard let connection = manager?.connection else { return }
         do {
             try await connection.fetchLastDisconnectError()
+            if previous == .connecting {
+                lastError = "Туннель не запустился. Подробности: Настройки → Журнал."
+            }
         } catch {
             let nsError = error as NSError
             if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-                lastError = underlying.localizedDescription
+                lastError = "\(nsError.localizedDescription) (\(underlying.localizedDescription))"
             } else if nsError.domain == NEVPNConnectionErrorDomain,
                       nsError.code == NEVPNConnectionError.noNetworkAvailable.rawValue
             {
                 lastError = "Нет сети"
             } else {
-                lastError = nsError.localizedDescription
+                lastError = "\(nsError.localizedDescription) [\(nsError.domain) \(nsError.code)]"
             }
         }
     }
@@ -129,7 +132,7 @@ public final class TunnelManager: ObservableObject {
         return manager
     }
 
-    public func start(config: String, runtime: TunnelRuntimeOptions) async {
+    public func start(config: String, runtime: TunnelRuntimeOptions, group: String? = nil) async {
         lastError = nil
         isBusy = true
         defer { isBusy = false }
@@ -141,10 +144,14 @@ public final class TunnelManager: ObservableObject {
                 try await manager.loadFromPreferences()
             }
             let runtimeJSON = String(data: try JSONEncoder().encode(runtime), encoding: .utf8) ?? "{}"
-            try manager.connection.startVPNTunnel(options: [
+            var options: [String: NSObject] = [
                 TunnelProtocol.configKey: config as NSString,
                 TunnelProtocol.runtimeKey: runtimeJSON as NSString,
-            ])
+            ]
+            if let group {
+                options[SharedGroup.optionKey] = group as NSString
+            }
+            try manager.connection.startVPNTunnel(options: options)
         } catch {
             lastError = error.localizedDescription
         }

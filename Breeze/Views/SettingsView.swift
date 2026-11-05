@@ -156,25 +156,51 @@ struct SettingsView: View {
 }
 
 struct LogsView: View {
+    enum Source: String, CaseIterable, Identifiable {
+        case live = "Онлайн"
+        case startup = "Запуск"
+        case core = "Ядро"
+        case crash = "Сбои"
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var state: AppState
     @ObservedObject private var client: CommandClient
+    @State private var source: Source = .startup
+    @State private var fileText: String?
+    @State private var refreshTick = 0
 
     init() {
         _client = ObservedObject(wrappedValue: AppStateLogClient.shared)
     }
 
+    private var lines: [String] {
+        if source == .live {
+            return client.logList
+        }
+        return (fileText ?? "").split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+    }
+
     var body: some View {
-        Group {
-            if !state.tunnel.isConnected {
+        VStack(spacing: 0) {
+            Picker("Источник", selection: $source) {
+                ForEach(Source.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, Theme.pagePadding)
+            .padding(.vertical, 12)
+
+            if lines.isEmpty {
                 ContentUnavailableView {
-                    Label("Журнал пуст", systemImage: "text.alignleft")
+                    Label("Записей нет", systemImage: "text.alignleft")
                 } description: {
-                    Text("Записи появятся, когда VPN будет подключён.")
+                    Text(emptyDescription)
                 }
+                .frame(maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
                     List {
-                        ForEach(Array(client.logList.enumerated()), id: \.offset) { index, line in
+                        ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                             Text(line)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(color(for: line))
@@ -184,13 +210,15 @@ struct LogsView: View {
                         }
                     }
                     .listStyle(.plain)
-                    .onChange(of: client.logList.count) { _, count in
-                        if count > 0 {
-                            proxy.scrollTo(count - 1, anchor: .bottom)
-                        }
+                    .scrollContentBackground(.hidden)
+                    .onAppear { proxy.scrollTo(lines.count - 1, anchor: .bottom) }
+                    .onChange(of: lines.count) { _, count in
+                        if count > 0 { proxy.scrollTo(count - 1, anchor: .bottom) }
                     }
                 }
             }
+
+            diagnosticsFooter
         }
         .background(PageBackground())
         .navigationTitle("Журнал")
@@ -198,20 +226,105 @@ struct LogsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    UIPasteboard.general.string = client.logList.joined(separator: "\n")
-                    state.show("Журнал скопирован")
+                    UIPasteboard.general.string = fullReport()
+                    state.show("Отчёт скопирован")
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
-                .disabled(client.logList.isEmpty)
             }
         }
-        .onAppear { if state.tunnel.isConnected { client.connect() } }
+        .onAppear {
+            source = state.tunnel.isConnected ? .live : .startup
+            if state.tunnel.isConnected { client.connect() }
+            reload()
+        }
         .onDisappear { client.disconnect() }
+        .onChange(of: source) { _, _ in reload() }
+        .onChange(of: state.tunnel.status) { _, status in
+            if status == .connected { client.connect() }
+            reload()
+        }
+        .task {
+            // files keep growing while the tunnel starts; poll them
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2 * NSEC_PER_SEC)
+                reload()
+            }
+        }
+    }
+
+    private var diagnosticsFooter: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Статус: \(statusText) · группа: \(state.sharedGroup ?? "нет")")
+            Text("Расширение: \(TunnelManager.tunnelBundleIdentifier)")
+            if let error = state.tunnel.lastError {
+                Text("Ошибка: \(error)").foregroundStyle(Theme.bad)
+            }
+        }
+        .font(.caption2.monospaced())
+        .foregroundStyle(Theme.secondaryLabel)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Theme.pagePadding)
+        .padding(.vertical, 10)
+        .textSelection(.enabled)
+    }
+
+    private var emptyDescription: String {
+        switch source {
+        case .live:
+            return "Онлайн-журнал работает, когда VPN подключён."
+        case .startup:
+            if state.sharedGroup == nil {
+                return "Нет общей группы в профиле подписи, поэтому расширение не может оставить записи."
+            }
+            return "Расширение ещё не запускалось. Если записей нет и после попытки подключения, система не смогла запустить расширение (обычно это проблема подписи)."
+        case .core:
+            return "Ядро ещё ничего не записало."
+        case .crash:
+            return "Сбоев не было."
+        }
+    }
+
+    private var statusText: String {
+        switch state.tunnel.status {
+        case .connected: return "подключено"
+        case .connecting: return "подключение"
+        case .disconnecting: return "отключение"
+        case .reasserting: return "переподключение"
+        case .disconnected: return "отключено"
+        case .invalid: return "не настроено"
+        @unknown default: return "?"
+        }
+    }
+
+    private func reload() {
+        switch source {
+        case .live:
+            fileText = nil
+        case .startup:
+            fileText = DiagnosticLog.read(DiagnosticLog.fileName, group: state.sharedGroup)
+        case .core:
+            fileText = DiagnosticLog.read(DiagnosticLog.boxLogName, group: state.sharedGroup)
+        case .crash:
+            fileText = DiagnosticLog.read(DiagnosticLog.stderrName, group: state.sharedGroup)
+        }
+    }
+
+    private func fullReport() -> String {
+        let group = state.sharedGroup
+        return [
+            "Breeze \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") core \(LibboxBootstrap.coreVersion)",
+            "status: \(statusText), group: \(group ?? "none"), extension: \(TunnelManager.tunnelBundleIdentifier)",
+            "error: \(state.tunnel.lastError ?? "none")",
+            "--- startup", DiagnosticLog.read(DiagnosticLog.fileName, group: group) ?? "(empty)",
+            "--- core", DiagnosticLog.read(DiagnosticLog.boxLogName, group: group, maxBytes: 16 * 1024) ?? "(empty)",
+            "--- stderr", DiagnosticLog.read(DiagnosticLog.stderrName, group: group, maxBytes: 16 * 1024) ?? "(empty)",
+            "--- live", client.logList.suffix(200).joined(separator: "\n"),
+        ].joined(separator: "\n")
     }
 
     private func color(for line: String) -> Color {
-        if line.contains("ERROR") || line.contains("FATAL") { return Theme.bad }
+        if line.contains("ERROR") || line.contains("FATAL") || line.contains("FAILED") || line.contains("panic") { return Theme.bad }
         if line.contains("WARN") { return Theme.fair }
         return Theme.label
     }

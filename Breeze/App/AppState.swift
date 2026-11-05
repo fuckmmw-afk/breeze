@@ -25,6 +25,7 @@ final class AppState: ObservableObject {
     @Published var toast: String?
 
     let tunnel = TunnelManager.shared
+    let sharedGroup = SharedGroup.discover()
     let statusClient = CommandClient(.status)
     let groupClient = CommandClient(.groups)
 
@@ -165,7 +166,7 @@ final class AppState: ObservableObject {
             tunnel.lastError = "Ошибка конфигурации: \(error)"
             return
         }
-        await tunnel.start(config: config, runtime: runtime)
+        await tunnel.start(config: config, runtime: runtime, group: sharedGroup)
     }
 
     /// Re-applies the config to a running tunnel (debounced).
@@ -191,7 +192,7 @@ final class AppState: ObservableObject {
             // fallback: full restart
             await tunnel.stop()
             try? await Task.sleep(nanoseconds: 800 * NSEC_PER_MSEC)
-            await tunnel.start(config: config, runtime: runtime)
+            await tunnel.start(config: config, runtime: runtime, group: sharedGroup)
         } else {
             statusClient.disconnect()
             groupClient.disconnect()

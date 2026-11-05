@@ -40,6 +40,16 @@ public enum TunnelProtocol {
 enum TunnelStore {
     static var configURL: URL { BreezePaths.base.appendingPathComponent("tunnel-config.json") }
     static var runtimeURL: URL { BreezePaths.base.appendingPathComponent("tunnel-runtime.json") }
+    static var groupURL: URL { BreezePaths.base.appendingPathComponent("tunnel-group.txt") }
+
+    static func save(group: String) {
+        try? group.data(using: .utf8)?.write(to: groupURL, options: .atomic)
+    }
+
+    static func loadGroup() -> String? {
+        guard let data = try? Data(contentsOf: groupURL) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
 
     static func save(config: String) {
         try? config.data(using: .utf8)?.write(to: configURL, options: .atomic)
@@ -73,11 +83,32 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
     private var boxService: LibboxBoxService?
     private var platformInterface: ExtensionPlatformInterface?
     public private(set) var runtimeOptions = TunnelRuntimeOptions()
+    private var diag = DiagnosticLog(directory: nil)
+    private var sharedDirectory: URL?
 
     override open func startTunnel(options: [String: NSObject]?) async throws {
+        if let group = options?[SharedGroup.optionKey] as? String, !group.isEmpty {
+            BreezePaths.prepare()
+            TunnelStore.save(group: group)
+        }
+        sharedDirectory = SharedGroup.container(TunnelStore.loadGroup())
+        diag = DiagnosticLog(directory: sharedDirectory)
+        diag.reset()
+        diag.write("startTunnel: options=\(options?.keys.sorted().joined(separator: ",") ?? "nil") shared=\(sharedDirectory?.path ?? "none")")
+        do {
+            try await startTunnel0(options)
+            diag.write("startTunnel: ok")
+        } catch {
+            diag.write("startTunnel: FAILED \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    private func startTunnel0(_ options: [String: NSObject]?) async throws {
         if let error = LibboxBootstrap.setup() {
             throw BreezeError("Не удалось запустить ядро: \(error.localizedDescription)").nsError
         }
+        diag.write("libbox setup ok, core \(LibboxBootstrap.coreVersion), base=\(BreezePaths.base.path)")
 
         if let config = options?[TunnelProtocol.configKey] as? String, !config.isEmpty {
             TunnelStore.save(config: config)
@@ -93,9 +124,14 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
         guard let config = TunnelStore.loadConfig() else {
             throw BreezeError("Нет конфигурации. Откройте Breeze и подключитесь из приложения.").nsError
         }
+        diag.write("config loaded: \(config.count) bytes")
 
         var error: NSError?
-        LibboxRedirectStderr(BreezePaths.temp.appendingPathComponent("stderr.log").path, &error)
+        let stderrDir = sharedDirectory ?? BreezePaths.temp
+        LibboxRedirectStderr(stderrDir.appendingPathComponent(DiagnosticLog.stderrName).path, &error)
+        if let error {
+            diag.write("redirect stderr: \(error.localizedDescription)")
+        }
         LibboxSetMemoryLimit(true)
 
         if platformInterface == nil {
@@ -111,12 +147,31 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
             throw BreezeError("Командный сервер: \(error.localizedDescription)").nsError
         }
         commandServer = server
+        diag.write("command server started")
         writeMessage("(breeze) tunnel starting")
 
-        try startService(config)
+        try startService(withLogFile(config))
+    }
+
+    /// Mirrors sing-box logs into the shared container so the app can show them after a failure.
+    private func withLogFile(_ config: String) -> String {
+        guard let sharedDirectory,
+              let data = config.data(using: .utf8),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return config }
+        let logURL = sharedDirectory.appendingPathComponent(DiagnosticLog.boxLogName)
+        try? Data().write(to: logURL)
+        var log = root["log"] as? [String: Any] ?? [:]
+        log["output"] = logURL.path
+        root["log"] = log
+        guard let patched = try? JSONSerialization.data(withJSONObject: root),
+              let string = String(data: patched, encoding: .utf8)
+        else { return config }
+        return string
     }
 
     private func startService(_ config: String) throws {
+        diag.write("creating service")
         var error: NSError?
         let service = LibboxNewService(config, platformInterface, &error)
         if let error {
@@ -134,6 +189,7 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
         }
         commandServer?.setService(service)
         boxService = service
+        diag.write("service started")
     }
 
     func writeMessage(_ message: String) {
@@ -166,8 +222,9 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
             return
         }
         do {
-            try startService(config)
+            try startService(withLogFile(config))
         } catch {
+            diag.write("reload FAILED \(error.localizedDescription)")
             cancelTunnelWithError(error)
         }
     }
@@ -178,6 +235,7 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
 
     override open func stopTunnel(with reason: NEProviderStopReason) async {
         writeMessage("(breeze) stopping, reason: \(reason.rawValue)")
+        diag.write("stopTunnel: reason \(reason.rawValue)")
         stopService()
         if let server = commandServer {
             try? await Task.sleep(nanoseconds: 100 * NSEC_PER_MSEC)
