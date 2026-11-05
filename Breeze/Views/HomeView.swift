@@ -204,7 +204,7 @@ private struct ServerCard: View {
     var body: some View {
         let selection = state.currentSelection
         let isAuto = selection == ConfigBuilder.autoTag
-        let node = isAuto ? state.effectiveServer : state.servers.first { $0.name == selection }
+        let node = isAuto ? state.effectiveServer : state.servers.first(where: { $0.name == selection })
         Button(action: action) {
             HStack(spacing: 14) {
                 if isAuto, node == nil {
@@ -368,10 +368,10 @@ private struct StatTile: View {
     }
 }
 
-// MARK: - Subscription traffic
+// MARK: - ProxySubscription traffic
 
 struct TrafficCard: View {
-    let subscription: Subscription
+    let subscription: ProxySubscription
     let traffic: SubscriptionTraffic
 
     var body: some View {

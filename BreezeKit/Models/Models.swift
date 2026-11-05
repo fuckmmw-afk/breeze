@@ -89,7 +89,7 @@ public struct SubscriptionTraffic: Codable, Hashable {
     }
 }
 
-public struct Subscription: Codable, Identifiable, Hashable {
+public struct ProxySubscription: Codable, Identifiable, Hashable {
     public enum Kind: String, Codable {
         case remote
         case local

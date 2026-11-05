@@ -6,7 +6,7 @@ import NetworkExtension
 import SwiftUI
 
 private struct PersistedState: Codable {
-    var subscriptions: [Subscription] = []
+    var subscriptions: [ProxySubscription] = []
     var activeSubscriptionID: UUID?
     var selectedServer: String?
     var settings = AppSettings()
@@ -14,7 +14,7 @@ private struct PersistedState: Codable {
 
 @MainActor
 final class AppState: ObservableObject {
-    @Published var subscriptions: [Subscription] = [] { didSet { save() } }
+    @Published var subscriptions: [ProxySubscription] = [] { didSet { save() } }
     @Published var activeSubscriptionID: UUID? { didSet { save() } }
     @Published var selectedServer: String? { didSet { save() } }
     @Published var settings = AppSettings() { didSet { if settings != oldValue { save(); scheduleReload() } } }
@@ -78,7 +78,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Derived
 
-    var activeSubscription: Subscription? {
+    var activeSubscription: ProxySubscription? {
         subscriptions.first { $0.id == activeSubscriptionID } ?? subscriptions.first
     }
 
@@ -261,7 +261,7 @@ final class AppState: ObservableObject {
         do {
             let fetched = try await SubscriptionFetcher.fetch(url: url, userAgent: settings.subscriptionUserAgent)
             let host = URL(string: url)?.host ?? "Подписка"
-            var subscription = Subscription(
+            var subscription = ProxySubscription(
                 name: (name?.isEmpty == false ? name! : nil) ?? fetched.title ?? host,
                 kind: .remote,
                 url: url.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -287,7 +287,7 @@ final class AppState: ObservableObject {
             show("Не нашёл поддерживаемых ссылок или конфигурации")
             return false
         }
-        let subscription = Subscription(
+        let subscription = ProxySubscription(
             name: (name?.isEmpty == false ? name! : nil) ?? (servers.count == 1 ? servers[0].cleanName : "Мои серверы"),
             kind: .local,
             content: text,
@@ -301,7 +301,7 @@ final class AppState: ObservableObject {
         return true
     }
 
-    private func apply(_ fetched: FetchedSubscription, to subscription: inout Subscription) {
+    private func apply(_ fetched: FetchedSubscription, to subscription: inout ProxySubscription) {
         subscription.servers = fetched.servers
         subscription.traffic = fetched.traffic
         subscription.updatedAt = .now

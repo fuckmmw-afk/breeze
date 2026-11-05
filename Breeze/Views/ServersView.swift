@@ -54,53 +54,40 @@ struct ServersView: View {
         List {
             if state.servers.count > 1, query.isEmpty {
                 Section {
-                    Button {
+                    AutoServerRow(
+                        subtitle: autoSubtitle,
+                        selected: state.currentSelection == ConfigBuilder.autoTag
+                    ) {
                         choose(ConfigBuilder.autoTag)
-                    } label: {
-                        HStack(spacing: 14) {
-                            IconTile(systemName: "bolt.fill", size: 40)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Самый быстрый")
-                                    .font(.body.weight(.semibold))
-                                    .foregroundStyle(Theme.label)
-                                Text(autoSubtitle)
-                                    .font(.footnote)
-                                    .foregroundStyle(Theme.secondaryLabel)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            if state.currentSelection == ConfigBuilder.autoTag {
-                                SelectedMark()
-                            }
-                        }
-                        .padding(.vertical, 6)
                     }
-                    .listRowBackground(Theme.card)
                 }
             }
-
-            Section {
-                ForEach(filtered) { node in
-                    Button {
-                        choose(node.name)
-                    } label: {
-                        ServerRow(
-                            node: node,
-                            latency: state.latency(for: node.name),
-                            selected: state.currentSelection == node.name,
-                            active: state.effectiveServer?.name == node.name && state.currentSelection == ConfigBuilder.autoTag
-                        )
-                    }
-                    .listRowBackground(Theme.card)
-                }
-            } header: {
-                Text("\(state.activeSubscription?.name ?? "Серверы") · \(filtered.count)")
-            }
+            serverSection
         }
         .listStyle(.insetGrouped)
         .breezeList()
         .searchable(text: $query, prompt: "Поиск")
         .refreshable { await state.testLatency() }
+    }
+
+    private var serverSection: some View {
+        let selection = state.currentSelection
+        let activeAuto = selection == ConfigBuilder.autoTag ? state.effectiveServer?.name : nil
+        let title = "\(state.activeSubscription?.name ?? "Серверы") · \(filtered.count)"
+        return Section {
+            ForEach(filtered) { node in
+                ServerButtonRow(
+                    node: node,
+                    latency: state.latency(for: node.name),
+                    selected: selection == node.name,
+                    active: activeAuto == node.name
+                ) {
+                    choose(node.name)
+                }
+            }
+        } header: {
+            Text(title)
+        }
     }
 
     private var autoSubtitle: String {
@@ -118,6 +105,50 @@ struct ServersView: View {
                 dismiss()
             }
         }
+    }
+}
+
+private struct AutoServerRow: View {
+    let subtitle: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                IconTile(systemName: "bolt.fill", size: 40)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Самый быстрый")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Theme.label)
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if selected {
+                    SelectedMark()
+                }
+            }
+            .padding(.vertical, 6)
+        }
+        .listRowBackground(Theme.card)
+    }
+}
+
+private struct ServerButtonRow: View {
+    let node: ServerNode
+    let latency: Int?
+    let selected: Bool
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ServerRow(node: node, latency: latency, selected: selected, active: active)
+        }
+        .listRowBackground(Theme.card)
     }
 }
 

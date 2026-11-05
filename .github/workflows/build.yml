@@ -69,7 +69,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build > build.log 2>&1 || true
           grep -E "BUILD (SUCCEEDED|FAILED)" build.log || true
-          test -d build/dd/Build/Products/Release-iphoneos/Breeze.app
+          grep -q "BUILD SUCCEEDED" build.log
 
       - name: Error summary
         if: failure()

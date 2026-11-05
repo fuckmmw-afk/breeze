@@ -5,9 +5,9 @@ import UIKit
 struct SubscriptionsView: View {
     @EnvironmentObject private var state: AppState
     @State private var showAdd = false
-    @State private var renaming: Subscription?
+    @State private var renaming: ProxySubscription?
     @State private var newName = ""
-    @State private var deleting: Subscription?
+    @State private var deleting: ProxySubscription?
 
     var body: some View {
         NavigationStack {
@@ -83,7 +83,7 @@ struct SubscriptionsView: View {
     }
 
     @ViewBuilder
-    private func menu(for subscription: Subscription) -> some View {
+    private func menu(for subscription: ProxySubscription) -> some View {
         if subscription.kind == .remote {
             Button {
                 Task { await state.update(subscription.id) }
@@ -138,7 +138,7 @@ struct SubscriptionsView: View {
 }
 
 private struct SubscriptionCard: View {
-    let subscription: Subscription
+    let subscription: ProxySubscription
     let active: Bool
     let updating: Bool
 
