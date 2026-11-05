@@ -1,0 +1,6 @@
+Breeze.xcodeproj/
+Frameworks/Libbox.xcframework/
+build/
+DerivedData/
+*.ipa
+.DS_Store

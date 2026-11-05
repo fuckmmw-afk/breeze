@@ -1,0 +1,123 @@
+name: Breeze
+options:
+  bundleIdPrefix: com.fuckmmw
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_BITCODE: NO
+    DEAD_CODE_STRIPPING: YES
+
+packages:
+  Yams:
+    url: https://github.com/jpsim/Yams
+    from: 5.1.0
+
+targets:
+  BreezeKit:
+    type: framework
+    platform: iOS
+    sources:
+      - path: BreezeKit
+    dependencies:
+      - framework: Frameworks/Libbox.xcframework
+        embed: false
+      - package: Yams
+      - sdk: NetworkExtension.framework
+      - sdk: libresolv.tbd
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fuckmmw.breeze.kit
+        PRODUCT_NAME: BreezeKit
+        GENERATE_INFOPLIST_FILE: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"
+
+  Breeze:
+    type: application
+    platform: iOS
+    sources:
+      - path: Breeze
+    dependencies:
+      - target: BreezeKit
+        embed: true
+      - target: BreezeTunnel
+        embed: true
+    info:
+      path: Breeze/Info.plist
+      properties:
+        CFBundleDisplayName: Breeze
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: com.fuckmmw.breeze
+            CFBundleURLSchemes:
+              - breeze
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fuckmmw.breeze
+        PRODUCT_NAME: Breeze
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: Breeze/Breeze.entitlements
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Frameworks/Libbox.xcframework/ios-arm64"
+
+  BreezeTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: BreezeTunnel
+    dependencies:
+      - target: BreezeKit
+        embed: false
+      - sdk: NetworkExtension.framework
+    info:
+      path: BreezeTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: Breeze Tunnel
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fuckmmw.breeze.tunnel
+        PRODUCT_NAME: BreezeTunnel
+        CODE_SIGN_ENTITLEMENTS: BreezeTunnel/BreezeTunnel.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Frameworks/Libbox.xcframework/ios-arm64"
+
+schemes:
+  Breeze:
+    build:
+      targets:
+        Breeze: all
+    run:
+      config: Debug
+    archive:
+      config: Release

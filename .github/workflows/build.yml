@@ -1,0 +1,94 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  SING_BOX_VERSION: v1.12.25
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Libbox
+        id: libbox-cache
+        uses: actions/cache@v4
+        with:
+          path: Frameworks/Libbox.xcframework
+          key: libbox-${{ env.SING_BOX_VERSION }}-ios-v1
+
+      - name: Checkout sing-box
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: SagerNet/sing-box
+          ref: ${{ env.SING_BOX_VERSION }}
+          path: sing-box
+
+      - name: Setup Go
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '~1.24.10'
+          cache-dependency-path: sing-box/go.sum
+
+      - name: Build Libbox
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        run: |
+          cd sing-box
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          go run ./cmd/internal/build_libbox -target apple -platform ios
+          mkdir -p ../Frameworks
+          mv Libbox.xcframework ../Frameworks/
+
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build app
+        run: |
+          set -o pipefail
+          xcodebuild -version
+          xcodebuild \
+            -project Breeze.xcodeproj \
+            -scheme Breeze \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/dd \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || true
+          grep -E "BUILD (SUCCEEDED|FAILED)" build.log || true
+          test -d build/dd/Build/Products/Release-iphoneos/Breeze.app
+
+      - name: Error summary
+        if: failure()
+        run: grep -E "error:" build.log | sort -u | head -150 || true
+
+      - name: Package IPA
+        run: |
+          mkdir -p dist/Payload
+          cp -R build/dd/Build/Products/Release-iphoneos/Breeze.app dist/Payload/
+          cd dist && zip -qry Breeze-unsigned.ipa Payload && ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: breeze-ipa
+          path: dist/Breeze-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
