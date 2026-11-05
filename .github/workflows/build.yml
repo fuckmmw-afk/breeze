@@ -75,6 +75,16 @@ jobs:
         if: failure()
         run: grep -E "error:" build.log | sort -u | head -150 || true
 
+      - name: Embed entitlements (ad-hoc)
+        run: |
+          # re-signers that keep the binary's entitlements need them present in the IPA
+          APP=build/dd/Build/Products/Release-iphoneos/Breeze.app
+          codesign -f -s - $APP/Frameworks/BreezeKit.framework
+          codesign -f -s - --entitlements BreezeTunnel/BreezeTunnel.entitlements $APP/PlugIns/BreezeTunnel.appex
+          codesign -f -s - --entitlements Breeze/Breeze.entitlements $APP
+          codesign -d --entitlements - --xml $APP/PlugIns/BreezeTunnel.appex | plutil -p - || true
+          codesign -d --entitlements - --xml $APP | plutil -p - || true
+
       - name: Package IPA
         run: |
           mkdir -p dist/Payload

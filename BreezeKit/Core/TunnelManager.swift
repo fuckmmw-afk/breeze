@@ -46,6 +46,7 @@ public final class TunnelManager: ObservableObject {
         do {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             let identifier = Self.tunnelBundleIdentifier
+            EventLog.shared.add("load: \(managers.count) VPN profiles, tunnel id \(identifier)")
             let match = managers.first {
                 ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == identifier
             }
@@ -57,8 +58,18 @@ public final class TunnelManager: ObservableObject {
                 attach(match)
             }
         } catch {
+            EventLog.shared.add("load FAILED: \(Self.describe(error))")
             lastError = error.localizedDescription
         }
+    }
+
+    static func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        var text = "\(ns.localizedDescription) [\(ns.domain) \(ns.code)]"
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+            text += " ← \(underlying.localizedDescription) [\(underlying.domain) \(underlying.code)]"
+        }
+        return text
     }
 
     private func attach(_ manager: NETunnelProviderManager) {
@@ -86,6 +97,9 @@ public final class TunnelManager: ObservableObject {
         }
         let newStatus = manager.connection.status
         let previous = status
+        if newStatus != previous {
+            EventLog.shared.add("status: \(Self.name(previous)) → \(Self.name(newStatus))")
+        }
         status = newStatus
         connectedDate = newStatus == .connected ? manager.connection.connectedDate : nil
         if newStatus == .disconnected, previous == .connecting || previous == .connected || previous == .reasserting {
@@ -97,11 +111,13 @@ public final class TunnelManager: ObservableObject {
         guard let connection = manager?.connection else { return }
         do {
             try await connection.fetchLastDisconnectError()
+            EventLog.shared.add("last disconnect error: none")
             if previous == .connecting {
                 lastError = "Туннель не запустился. Подробности: Настройки → Журнал."
             }
         } catch {
             let nsError = error as NSError
+            EventLog.shared.add("last disconnect error: \(Self.describe(error))")
             if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
                 lastError = "\(nsError.localizedDescription) (\(underlying.localizedDescription))"
             } else if nsError.domain == NEVPNConnectionErrorDomain,
@@ -126,7 +142,9 @@ public final class TunnelManager: ObservableObject {
         proto.disconnectOnSleep = false
         manager.protocolConfiguration = proto
         manager.isEnabled = true
+        EventLog.shared.add("installing VPN profile for \(proto.providerBundleIdentifier ?? "?")")
         try await manager.saveToPreferences()
+        EventLog.shared.add("VPN profile saved")
         try await manager.loadFromPreferences()
         attach(manager)
         return manager
@@ -151,13 +169,28 @@ public final class TunnelManager: ObservableObject {
             if let group {
                 options[SharedGroup.optionKey] = group as NSString
             }
+            EventLog.shared.add("startVPNTunnel: config \(config.count) bytes, group \(group ?? "none")")
             try manager.connection.startVPNTunnel(options: options)
         } catch {
+            EventLog.shared.add("start FAILED: \(Self.describe(error))")
             lastError = error.localizedDescription
         }
     }
 
+    static func name(_ status: NEVPNStatus) -> String {
+        switch status {
+        case .invalid: return "invalid"
+        case .disconnected: return "disconnected"
+        case .connecting: return "connecting"
+        case .connected: return "connected"
+        case .reasserting: return "reasserting"
+        case .disconnecting: return "disconnecting"
+        @unknown default: return "unknown"
+        }
+    }
+
     public func stop() async {
+        EventLog.shared.add("stop requested")
         guard let manager else { return }
         if manager.isOnDemandEnabled {
             manager.isOnDemandEnabled = false

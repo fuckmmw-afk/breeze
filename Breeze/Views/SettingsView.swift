@@ -157,8 +157,9 @@ struct SettingsView: View {
 
 struct LogsView: View {
     enum Source: String, CaseIterable, Identifiable {
-        case live = "Онлайн"
+        case app = "Приложение"
         case startup = "Запуск"
+        case live = "Онлайн"
         case core = "Ядро"
         case crash = "Сбои"
         var id: String { rawValue }
@@ -166,7 +167,9 @@ struct LogsView: View {
 
     @EnvironmentObject private var state: AppState
     @ObservedObject private var client: CommandClient
-    @State private var source: Source = .startup
+    @ObservedObject private var events = EventLog.shared
+    @State private var source: Source = .app
+    @State private var signing = ""
     @State private var fileText: String?
     @State private var refreshTick = 0
 
@@ -177,6 +180,9 @@ struct LogsView: View {
     private var lines: [String] {
         if source == .live {
             return client.logList
+        }
+        if source == .app {
+            return signing.split(separator: "\n").map(String.init) + ["———"] + events.lines
         }
         return (fileText ?? "").split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }
@@ -234,7 +240,8 @@ struct LogsView: View {
             }
         }
         .onAppear {
-            source = state.tunnel.isConnected ? .live : .startup
+            source = state.tunnel.isConnected ? .live : .app
+            signing = SigningInfo.report()
             if state.tunnel.isConnected { client.connect() }
             reload()
         }
@@ -271,6 +278,8 @@ struct LogsView: View {
 
     private var emptyDescription: String {
         switch source {
+        case .app:
+            return "Событий пока нет."
         case .live:
             return "Онлайн-журнал работает, когда VPN подключён."
         case .startup:
@@ -299,7 +308,7 @@ struct LogsView: View {
 
     private func reload() {
         switch source {
-        case .live:
+        case .live, .app:
             fileText = nil
         case .startup:
             fileText = DiagnosticLog.read(DiagnosticLog.fileName, group: state.sharedGroup)
@@ -316,6 +325,8 @@ struct LogsView: View {
             "Breeze \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") core \(LibboxBootstrap.coreVersion)",
             "status: \(statusText), group: \(group ?? "none"), extension: \(TunnelManager.tunnelBundleIdentifier)",
             "error: \(state.tunnel.lastError ?? "none")",
+            "--- signing", SigningInfo.report(),
+            "--- app events", events.lines.joined(separator: "\n"),
             "--- startup", DiagnosticLog.read(DiagnosticLog.fileName, group: group) ?? "(empty)",
             "--- core", DiagnosticLog.read(DiagnosticLog.boxLogName, group: group, maxBytes: 16 * 1024) ?? "(empty)",
             "--- stderr", DiagnosticLog.read(DiagnosticLog.stderrName, group: group, maxBytes: 16 * 1024) ?? "(empty)",
@@ -324,7 +335,7 @@ struct LogsView: View {
     }
 
     private func color(for line: String) -> Color {
-        if line.contains("ERROR") || line.contains("FATAL") || line.contains("FAILED") || line.contains("panic") { return Theme.bad }
+        if line.contains("ERROR") || line.contains("FATAL") || line.contains("FAILED") || line.contains("panic") || line.contains("НЕТ") || line.contains("НЕ НАЙДЕНО") { return Theme.bad }
         if line.contains("WARN") { return Theme.fair }
         return Theme.label
     }

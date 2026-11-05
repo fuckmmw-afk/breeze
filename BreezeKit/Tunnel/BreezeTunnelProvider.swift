@@ -91,7 +91,7 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
             BreezePaths.prepare()
             TunnelStore.save(group: group)
         }
-        sharedDirectory = SharedGroup.container(TunnelStore.loadGroup())
+        sharedDirectory = SharedGroup.container(TunnelStore.loadGroup()) ?? SharedGroup.container(SharedGroup.discover())
         diag = DiagnosticLog(directory: sharedDirectory)
         diag.reset()
         diag.write("startTunnel: options=\(options?.keys.sorted().joined(separator: ",") ?? "nil") shared=\(sharedDirectory?.path ?? "none")")

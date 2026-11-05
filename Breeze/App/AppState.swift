@@ -162,10 +162,13 @@ final class AppState: ObservableObject {
             return
         }
         let config = buildConfig()
+        EventLog.shared.add("connect: \(servers.count) servers, selected \(currentSelection)")
         if let error = TunnelCommands.checkConfig(config) {
+            EventLog.shared.add("config check FAILED: \(error)")
             tunnel.lastError = "Ошибка конфигурации: \(error)"
             return
         }
+        EventLog.shared.add("config check ok")
         await tunnel.start(config: config, runtime: runtime, group: sharedGroup)
     }
 

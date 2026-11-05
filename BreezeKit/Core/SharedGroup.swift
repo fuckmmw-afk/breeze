@@ -8,7 +8,8 @@ public enum SharedGroup {
 
     /// App side: groups listed in embedded.mobileprovision that are actually usable.
     public static func discover() -> String? {
-        for group in profileGroups() where FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) != nil {
+        let candidates = profileGroups() + SigningInfo.inspect(Bundle.main).groups.sorted()
+        for group in candidates where FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) != nil {
             return group
         }
         return nil
