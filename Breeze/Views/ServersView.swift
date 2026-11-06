@@ -6,11 +6,14 @@ struct ServersView: View {
     @Environment(\.dismiss) private var dismiss
     var asSheet = false
     @State private var query = ""
+    @AppStorage("sortByLatency") private var sortByLatency = false
 
     private var filtered: [ServerNode] {
-        let servers = state.servers
-        guard !query.isEmpty else { return servers }
-        return servers.filter { $0.name.localizedCaseInsensitiveContains(query) || $0.displayType.localizedCaseInsensitiveContains(query) }
+        var servers = state.servers
+        if !query.isEmpty {
+            servers = servers.filter { $0.name.localizedCaseInsensitiveContains(query) || $0.displayType.localizedCaseInsensitiveContains(query) }
+        }
+        return sortByLatency ? state.sortedByLatency(servers) : servers
     }
 
     var body: some View {
@@ -29,6 +32,15 @@ struct ServersView: View {
             }
             .navigationTitle("Серверы")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        withAnimation(.snappy) { sortByLatency.toggle() }
+                    } label: {
+                        Image(systemName: sortByLatency ? "arrow.up.arrow.down.circle.fill" : "arrow.up.arrow.down.circle")
+                    }
+                    .accessibilityLabel("Сортировать по задержке")
+                    .disabled(state.servers.isEmpty)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task { await state.testLatency() }
@@ -68,6 +80,11 @@ struct ServersView: View {
         .breezeList()
         .searchable(text: $query, prompt: "Поиск")
         .refreshable { await state.testLatency() }
+        .task {
+            if state.settings.pingOnOpen, state.pingResults.isEmpty {
+                await state.testLatency()
+            }
+        }
     }
 
     private var serverSection: some View {
@@ -87,7 +104,16 @@ struct ServersView: View {
             }
         } header: {
             Text(title)
+        } footer: {
+            Text(pingFooter)
         }
+    }
+
+    private var pingFooter: String {
+        if state.tunnel.isConnected {
+            return "Задержка измеряется ядром через сами серверы."
+        }
+        return "Задержка: \(state.settings.pingMethod.title.lowercased()). Метод меняется в настройках."
     }
 
     private var autoSubtitle: String {
@@ -124,7 +150,7 @@ private struct AutoServerRow: View {
                     Text(subtitle)
                         .font(.footnote)
                         .foregroundStyle(Theme.secondaryLabel)
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
                 Spacer()
                 if selected {
@@ -165,7 +191,8 @@ struct ServerRow: View {
                 Text(node.cleanName)
                     .font(.body.weight(.medium))
                     .foregroundStyle(Theme.label)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 6) {
                     Text([node.displayType, node.transportLabel].compactMap { $0 }.joined(separator: " · "))
                     if active {

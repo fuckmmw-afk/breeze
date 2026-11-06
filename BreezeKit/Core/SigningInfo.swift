@@ -56,7 +56,10 @@ public enum SigningInfo {
               let items = try? FileManager.default.contentsOfDirectory(at: plugins, includingPropertiesForKeys: nil)
         else { return nil }
         for url in items where url.pathExtension == "appex" {
-            if let bundle = Foundation.Bundle(url: url) {
+            if let bundle = Foundation.Bundle(url: url),
+               let ext = bundle.object(forInfoDictionaryKey: "NSExtension") as? [String: Any],
+               ext["NSExtensionPointIdentifier"] as? String == "com.apple.networkextension.packet-tunnel"
+            {
                 return inspect(bundle)
             }
         }

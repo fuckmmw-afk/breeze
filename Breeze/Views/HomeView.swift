@@ -216,11 +216,14 @@ private struct ServerCard: View {
                     Text(isAuto ? "Самый быстрый" : (node?.cleanName ?? selection))
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.label)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
                     Text(subtitle(isAuto: isAuto, node: node))
                         .font(.footnote)
                         .foregroundStyle(Theme.secondaryLabel)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 8)
                 if let node {

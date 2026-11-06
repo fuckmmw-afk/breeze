@@ -167,6 +167,27 @@ public enum DNSPreset: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+public enum PingMethod: String, Codable, CaseIterable, Identifiable {
+    case url
+    case tcp
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .url: return "GET через прокси"
+        case .tcp: return "TCP до сервера"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .url: return "Настоящий запрос через сервер: показывает, работает ли прокси"
+        case .tcp: return "Только время соединения с сервером, быстро, но не проверяет прокси"
+        }
+    }
+}
+
 public struct AppSettings: Codable, Equatable {
     public var routingMode: RoutingMode = .rule
     public var bypassRussia = true
@@ -179,8 +200,27 @@ public struct AppSettings: Codable, Equatable {
     public var autoUpdateSubscriptions = true
     public var logLevel = "warn"
     public var excludeAPNs = true
+    public var pingMethod: PingMethod = .url
+    public var pingTimeout = 5000
+    public var pingOnOpen = false
+    public var liveActivity = true
+    public var connectOnDemand = false
+
+    public static let urlTestPresets: [(title: String, url: String)] = [
+        ("Google", "https://www.gstatic.com/generate_204"),
+        ("Cloudflare", "https://cp.cloudflare.com/generate_204"),
+        ("Apple", "https://captive.apple.com/hotspot-detect.html"),
+        ("Microsoft", "https://www.msftconnecttest.com/connecttest.txt"),
+    ]
 
     public init() {}
+
+    /// Only settings that end up in the sing-box config require a tunnel reload.
+    public func needsReload(comparedTo other: AppSettings) -> Bool {
+        bypassRussia != other.bypassRussia || blockAds != other.blockAds || enableIPv6 != other.enableIPv6
+            || dns != other.dns || directDNS != other.directDNS || urlTestURL != other.urlTestURL
+            || logLevel != other.logLevel || excludeAPNs != other.excludeAPNs
+    }
 
     public init(from decoder: Decoder) throws {
         // tolerant decoding: new fields fall back to defaults
@@ -197,5 +237,10 @@ public struct AppSettings: Codable, Equatable {
         autoUpdateSubscriptions = (try? c.decode(Bool.self, forKey: .autoUpdateSubscriptions)) ?? defaults.autoUpdateSubscriptions
         logLevel = (try? c.decode(String.self, forKey: .logLevel)) ?? defaults.logLevel
         excludeAPNs = (try? c.decode(Bool.self, forKey: .excludeAPNs)) ?? defaults.excludeAPNs
+        pingMethod = (try? c.decode(PingMethod.self, forKey: .pingMethod)) ?? defaults.pingMethod
+        pingTimeout = (try? c.decode(Int.self, forKey: .pingTimeout)) ?? defaults.pingTimeout
+        pingOnOpen = (try? c.decode(Bool.self, forKey: .pingOnOpen)) ?? defaults.pingOnOpen
+        liveActivity = (try? c.decode(Bool.self, forKey: .liveActivity)) ?? defaults.liveActivity
+        connectOnDemand = (try? c.decode(Bool.self, forKey: .connectOnDemand)) ?? defaults.connectOnDemand
     }
 }

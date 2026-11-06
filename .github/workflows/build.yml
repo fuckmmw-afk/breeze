@@ -90,6 +90,7 @@ jobs:
           APP=build/dd/Build/Products/Release-iphoneos/Breeze.app
           codesign -f -s - $APP/Frameworks/BreezeKit.framework
           codesign -f -s - --entitlements BreezeTunnel/BreezeTunnel.entitlements $APP/PlugIns/BreezeTunnel.appex
+          codesign -f -s - --entitlements BreezeWidgets/BreezeWidgets.entitlements $APP/PlugIns/BreezeWidgets.appex
           codesign -f -s - --entitlements Breeze/Breeze.entitlements $APP
           codesign -d --entitlements - --xml $APP/PlugIns/BreezeTunnel.appex | plutil -p - || true
           codesign -d --entitlements - --xml $APP | plutil -p - || true

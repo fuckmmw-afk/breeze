@@ -3,7 +3,7 @@ import SwiftUI
 
 @main
 struct BreezeApp: App {
-    @StateObject private var state = AppState()
+    @StateObject private var state = AppState.shared
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -25,7 +25,10 @@ struct BreezeApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                Task { await state.tunnel.load() }
+                Task {
+                    await state.tunnel.load()
+                    state.publishIntegrations()
+                }
             }
         }
     }

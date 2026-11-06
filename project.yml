@@ -9,8 +9,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0.3"
-    CURRENT_PROJECT_VERSION: "4"
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "5"
     TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_BITCODE: NO
     DEAD_CODE_STRIPPING: YES
@@ -52,10 +52,13 @@ targets:
     platform: iOS
     sources:
       - path: Breeze
+      - path: Shared
     dependencies:
       - target: BreezeKit
         embed: true
       - target: BreezeTunnel
+        embed: true
+      - target: BreezeWidgets
         embed: true
     info:
       path: Breeze/Info.plist
@@ -76,6 +79,9 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+        NSSupportsLiveActivities: true
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         CFBundleURLTypes:
           - CFBundleURLName: com.fuckmmw.breeze
             CFBundleURLSchemes:
@@ -87,6 +93,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_ENTITLEMENTS: Breeze/Breeze.entitlements
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) BREEZE_APP"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Frameworks/Libbox.xcframework/ios-arm64"
 
@@ -116,6 +123,36 @@ targets:
         APPLICATION_EXTENSION_API_ONLY: YES
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Frameworks/Libbox.xcframework/ios-arm64"
+
+  BreezeWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: BreezeWidgets
+      - path: Shared
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: AppIntents.framework
+      - sdk: ActivityKit.framework
+      - sdk: NetworkExtension.framework
+    info:
+      path: BreezeWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Breeze
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fuckmmw.breeze.widgets
+        PRODUCT_NAME: BreezeWidgets
+        CODE_SIGN_ENTITLEMENTS: BreezeWidgets/BreezeWidgets.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
 
 schemes:
   Breeze:

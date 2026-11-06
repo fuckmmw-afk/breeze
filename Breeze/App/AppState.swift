@@ -14,12 +14,29 @@ private struct PersistedState: Codable {
 
 @MainActor
 final class AppState: ObservableObject {
+    static let shared = AppState()
+
     @Published var subscriptions: [ProxySubscription] = [] { didSet { save() } }
     @Published var activeSubscriptionID: UUID? { didSet { save() } }
     @Published var selectedServer: String? { didSet { save() } }
-    @Published var settings = AppSettings() { didSet { if settings != oldValue { save(); scheduleReload() } } }
+    @Published var settings = AppSettings() {
+        didSet {
+            guard settings != oldValue else { return }
+            save()
+            if settings.connectOnDemand != oldValue.connectOnDemand {
+                let enabled = settings.connectOnDemand
+                Task { await tunnel.setAlwaysOn(enabled) }
+            }
+            if settings.liveActivity != oldValue.liveActivity {
+                publishIntegrations()
+            }
+            if settings.needsReload(comparedTo: oldValue) {
+                scheduleReload()
+            }
+        }
+    }
 
-    @Published var tcpLatency: [String: Int] = [:]
+    @Published var pingResults: [String: Int] = [:]
     @Published var testingLatency = false
     @Published var updatingIDs: Set<UUID> = []
     @Published var toast: String?
@@ -124,7 +141,7 @@ final class AppState: ObservableObject {
                 }
             }
         }
-        return tcpLatency[tag]
+        return pingResults[tag]
     }
 
     // MARK: - Tunnel
@@ -138,6 +155,30 @@ final class AppState: ObservableObject {
             groupClient.disconnect()
             AppStateLogClient.shared.disconnect()
         }
+        publishIntegrations()
+    }
+
+    /// Feeds widgets, the Control Center toggle and the Live Activity.
+    func publishIntegrations() {
+        let selection = currentSelection
+        let node = effectiveServer ?? servers.first { $0.name == selection }
+        let serverName = node?.cleanName ?? (selection == ConfigBuilder.autoTag ? "Самый быстрый" : selection)
+        WidgetStore.save(WidgetSnapshot(
+            serverName: serverName,
+            flag: node?.flag,
+            mode: settings.routingMode.title,
+            subscription: activeSubscription?.name,
+            updatedAt: .now
+        ))
+        WidgetStore.reloadAll()
+        LiveActivityController.update(
+            connected: tunnel.isConnected,
+            enabled: settings.liveActivity,
+            server: serverName,
+            flag: node?.flag,
+            mode: settings.routingMode.title,
+            since: tunnel.connectedDate
+        )
     }
 
     func buildConfig() -> String {
@@ -170,6 +211,9 @@ final class AppState: ObservableObject {
         }
         EventLog.shared.add("config check ok")
         await tunnel.start(config: config, runtime: runtime, group: sharedGroup)
+        if settings.connectOnDemand {
+            await tunnel.setAlwaysOn(true)
+        }
     }
 
     /// Re-applies the config to a running tunnel (debounced).
@@ -216,6 +260,7 @@ final class AppState: ObservableObject {
                 show("Не удалось переключить: \(error.localizedDescription)")
             }
         }
+        publishIntegrations()
     }
 
     func setMode(_ mode: RoutingMode) {
@@ -228,33 +273,61 @@ final class AppState: ObservableObject {
         if tunnel.isConnected {
             try? TunnelCommands.setClashMode(mode.rawValue)
         }
+        publishIntegrations()
     }
 
     // MARK: - Latency
 
     func testLatency() async {
-        guard !testingLatency else { return }
+        guard !testingLatency, !servers.isEmpty else { return }
         testingLatency = true
         defer { testingLatency = false }
         if tunnel.isConnected {
-            try? TunnelCommands.urlTest(group: ConfigBuilder.selectorTag)
+            // the running core measures through its own outbounds
+            await Task.detached { try? TunnelCommands.urlTest(group: ConfigBuilder.selectorTag) }.value
             try? await Task.sleep(nanoseconds: 1500 * NSEC_PER_MSEC)
             return
         }
         let targets = servers
-        for start in stride(from: 0, to: targets.count, by: 12) {
-            let slice = Array(targets[start ..< min(start + 12, targets.count)])
-            await withTaskGroup(of: (String, Int).self) { group in
-                for node in slice {
-                    let host = node.host
-                    let port = node.port
-                    let tag = node.name
-                    group.addTask { (tag, await TCPPing.measure(host: host, port: port)) }
+        pingResults = [:]
+        switch settings.pingMethod {
+        case .url:
+            do {
+                try await ProxyLatencyTester.test(
+                    servers: targets,
+                    url: settings.urlTestURL,
+                    timeoutMs: settings.pingTimeout
+                ) { tag, value in
+                    await MainActor.run { AppState.shared.pingResults[tag] = value }
                 }
-                for await (tag, value) in group {
-                    tcpLatency[tag] = value
+            } catch {
+                show("Тест задержки: \(error.localizedDescription)")
+            }
+        case .tcp:
+            let timeout = TimeInterval(settings.pingTimeout) / 1000
+            for start in stride(from: 0, to: targets.count, by: 16) {
+                let slice = Array(targets[start ..< min(start + 16, targets.count)])
+                await withTaskGroup(of: (String, Int).self) { group in
+                    for node in slice {
+                        let host = node.host
+                        let port = node.port
+                        let tag = node.name
+                        group.addTask { (tag, await TCPPing.measure(host: host, port: port, timeout: timeout)) }
+                    }
+                    for await (tag, value) in group {
+                        pingResults[tag] = value
+                    }
                 }
             }
+        }
+    }
+
+    /// Sorts servers by the last measured latency (failures last).
+    func sortedByLatency(_ nodes: [ServerNode]) -> [ServerNode] {
+        nodes.sorted { a, b in
+            let la = latency(for: a.name).flatMap { $0 > 0 ? $0 : nil } ?? Int.max
+            let lb = latency(for: b.name).flatMap { $0 > 0 ? $0 : nil } ?? Int.max
+            return la < lb
         }
     }
 
@@ -353,7 +426,7 @@ final class AppState: ObservableObject {
         guard activeSubscriptionID != id else { return }
         activeSubscriptionID = id
         selectedServer = nil
-        tcpLatency = [:]
+        pingResults = [:]
         scheduleReload()
     }
 
@@ -372,6 +445,22 @@ final class AppState: ObservableObject {
     }
 
     func handle(url: URL) async {
+        // breeze://connect | disconnect | toggle — handy for Shortcuts automations
+        if url.scheme?.lowercased() == "breeze" {
+            switch url.host?.lowercased() {
+            case "connect", "on":
+                if !tunnel.isConnected { await connect() }
+                return
+            case "disconnect", "off":
+                await tunnel.stop()
+                return
+            case "toggle":
+                await toggle()
+                return
+            default:
+                break
+            }
+        }
         // breeze://import?url=<encoded>&name=<name>, sing-box://import-remote-profile?url=...
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let items = components?.queryItems ?? []

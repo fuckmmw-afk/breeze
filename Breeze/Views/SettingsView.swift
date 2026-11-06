@@ -8,111 +8,201 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    ForEach(RoutingMode.allCases) { mode in
-                        Button {
-                            withAnimation(.snappy) { state.setMode(mode) }
-                        } label: {
-                            HStack(spacing: 14) {
-                                IconTile(systemName: icon(for: mode), color: color(for: mode))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(mode.title).foregroundStyle(Theme.label)
-                                    Text(mode.subtitle)
-                                        .font(.footnote)
-                                        .foregroundStyle(Theme.secondaryLabel)
-                                }
-                                Spacer()
-                                if state.settings.routingMode == mode {
-                                    Image(systemName: "checkmark")
-                                        .font(.body.weight(.semibold))
-                                        .foregroundStyle(Theme.accent)
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
-                } header: {
-                    Text("Режим")
-                }
-                .listRowBackground(Theme.card)
-
-                Section {
-                    toggleRow("Российские сайты напрямую", icon: "house.fill", color: .indigo, isOn: $state.settings.bypassRussia)
-                    toggleRow("Блокировать рекламу", icon: "hand.raised.fill", color: .orange, isOn: $state.settings.blockAds)
-                } header: {
-                    Text("Маршрутизация")
-                } footer: {
-                    Text("В умном режиме домены .ru, .рф, Яндекс, VK и российские IP идут мимо VPN. Списки обновляются автоматически.")
-                }
-                .listRowBackground(Theme.card)
-
-                Section {
-                    Picker(selection: $state.settings.dns) {
-                        ForEach(DNSPreset.allCases) { Text($0.title).tag($0) }
-                    } label: {
-                        rowLabel("DNS через VPN", icon: "network", color: Theme.accent)
-                    }
-                    toggleRow("IPv6", icon: "6.circle.fill", color: .teal, isOn: $state.settings.enableIPv6)
-                    toggleRow("Push Apple мимо VPN", icon: "bell.badge.fill", color: .red, isOn: $state.settings.excludeAPNs)
-                } header: {
-                    Text("Сеть")
-                } footer: {
-                    Text("Push-уведомления надёжнее приходят, если серверы Apple не заворачивать в туннель.")
-                }
-                .listRowBackground(Theme.card)
-
-                Section {
-                    toggleRow("Автообновление", icon: "arrow.triangle.2.circlepath", color: .green, isOn: $state.settings.autoUpdateSubscriptions)
-                    HStack(spacing: 14) {
-                        IconTile(systemName: "person.text.rectangle.fill", color: .gray)
-                        TextField("User-Agent", text: $state.settings.subscriptionUserAgent)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .foregroundStyle(Theme.label)
-                    }
-                    .padding(.vertical, 2)
-                } header: {
-                    Text("Подписки")
-                } footer: {
-                    Text("Некоторые провайдеры отдают разный формат в зависимости от User-Agent.")
-                }
-                .listRowBackground(Theme.card)
-
-                Section {
-                    NavigationLink {
-                        LogsView()
-                    } label: {
-                        rowLabel("Журнал", icon: "text.alignleft", color: .gray)
-                    }
-                    NavigationLink {
-                        ConfigPreviewView()
-                    } label: {
-                        rowLabel("Конфигурация sing-box", icon: "curlybraces", color: .purple)
-                    }
-                    Picker(selection: $state.settings.logLevel) {
-                        ForEach(["error", "warn", "info", "debug"], id: \.self) { Text($0).tag($0) }
-                    } label: {
-                        rowLabel("Уровень журнала", icon: "slider.horizontal.3", color: .gray)
-                    }
-                } header: {
-                    Text("Диагностика")
-                }
-                .listRowBackground(Theme.card)
-
-                Section {
-                    infoRow("Версия", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")
-                    infoRow("Ядро", "sing-box \(LibboxBootstrap.coreVersion)")
-                } header: {
-                    Text("О приложении")
-                } footer: {
-                    Text("Breeze работает на ядре sing-box. Распространяется под GPL-3.0.")
-                }
-                .listRowBackground(Theme.card)
+                modeSection
+                routingSection
+                networkSection
+                pingSection
+                iosSection
+                subscriptionSection
+                diagnosticsSection
+                aboutSection
             }
             .listStyle(.insetGrouped)
             .breezeList()
             .navigationTitle("Настройки")
         }
+    }
+
+    private var modeSection: some View {
+        Section {
+            ForEach(RoutingMode.allCases) { mode in
+                Button {
+                    withAnimation(.snappy) { state.setMode(mode) }
+                } label: {
+                    HStack(spacing: 14) {
+                        IconTile(systemName: icon(for: mode), color: color(for: mode))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(mode.title).foregroundStyle(Theme.label)
+                            Text(mode.subtitle)
+                                .font(.footnote)
+                                .foregroundStyle(Theme.secondaryLabel)
+                        }
+                        Spacer()
+                        if state.settings.routingMode == mode {
+                            Image(systemName: "checkmark")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        } header: {
+            Text("Режим")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var routingSection: some View {
+        Section {
+            toggleRow("Российские сайты напрямую", icon: "house.fill", color: .indigo, isOn: $state.settings.bypassRussia)
+            toggleRow("Блокировать рекламу", icon: "hand.raised.fill", color: .orange, isOn: $state.settings.blockAds)
+        } header: {
+            Text("Маршрутизация")
+        } footer: {
+            Text("В умном режиме домены .ru, .рф, Яндекс, VK и российские IP идут мимо VPN. Списки обновляются автоматически.")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var networkSection: some View {
+        Section {
+            Picker(selection: $state.settings.dns) {
+                ForEach(DNSPreset.allCases) { Text($0.title).tag($0) }
+            } label: {
+                rowLabel("DNS через VPN", icon: "network", color: Theme.accent)
+            }
+            toggleRow("IPv6", icon: "6.circle.fill", color: .teal, isOn: $state.settings.enableIPv6)
+            toggleRow("Push Apple мимо VPN", icon: "bell.badge.fill", color: .red, isOn: $state.settings.excludeAPNs)
+        } header: {
+            Text("Сеть")
+        } footer: {
+            Text("Push-уведомления надёжнее приходят, если серверы Apple не заворачивать в туннель.")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var pingSection: some View {
+        Section {
+            ForEach(PingMethod.allCases) { method in
+                Button {
+                    state.settings.pingMethod = method
+                } label: {
+                    HStack(spacing: 14) {
+                        IconTile(systemName: method == .url ? "arrow.left.arrow.right" : "bolt.horizontal.fill", color: method == .url ? Theme.accent : .teal)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(method.title).foregroundStyle(Theme.label)
+                            Text(method.subtitle)
+                                .font(.footnote)
+                                .foregroundStyle(Theme.secondaryLabel)
+                        }
+                        Spacer()
+                        if state.settings.pingMethod == method {
+                            Image(systemName: "checkmark")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Picker(selection: $state.settings.urlTestURL) {
+                ForEach(AppSettings.urlTestPresets, id: \.url) { preset in
+                    Text(preset.title).tag(preset.url)
+                }
+                if !AppSettings.urlTestPresets.contains(where: { $0.url == state.settings.urlTestURL }) {
+                    Text("Свой").tag(state.settings.urlTestURL)
+                }
+            } label: {
+                rowLabel("Адрес проверки", icon: "link", color: .indigo)
+            }
+            Picker(selection: $state.settings.pingTimeout) {
+                ForEach([2000, 3000, 5000, 8000, 10000], id: \.self) { value in
+                    Text("\(value / 1000) с").tag(value)
+                }
+            } label: {
+                rowLabel("Таймаут", icon: "timer", color: .orange)
+            }
+            toggleRow("Проверять при открытии", icon: "arrow.clockwise", color: .green, isOn: $state.settings.pingOnOpen)
+        } header: {
+            Text("Проверка задержки")
+        } footer: {
+            Text("Когда VPN подключён, задержку всегда меряет само ядро через серверы. Адрес проверки также используется для автовыбора самого быстрого сервера.")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var iosSection: some View {
+        Section {
+            toggleRow("Подключаться автоматически", icon: "bolt.shield.fill", color: Theme.accent, isOn: $state.settings.connectOnDemand)
+            toggleRow("Live Activity", icon: "capsule.portrait.fill", color: .purple, isOn: $state.settings.liveActivity)
+            VStack(alignment: .leading, spacing: 10) {
+                integrationHint("switch.2", "Пункт управления: «+» → Breeze VPN")
+                integrationHint("lock.fill", "Экран блокировки и рабочий стол: виджет Breeze")
+                integrationHint("square.stack.3d.up.fill", "Команды и Siri: «Включи Breeze», «Выключи Breeze», «Режим Breeze»")
+                integrationHint("link", "Ссылки: breeze://connect, breeze://disconnect, breeze://toggle")
+            }
+            .padding(.vertical, 6)
+        } header: {
+            Text("iOS")
+        } footer: {
+            Text("Автоподключение включает VPN при появлении сети (On Demand). Live Activity показывает статус и время подключения в Dynamic Island.")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var subscriptionSection: some View {
+        Section {
+            toggleRow("Автообновление", icon: "arrow.triangle.2.circlepath", color: .green, isOn: $state.settings.autoUpdateSubscriptions)
+            HStack(spacing: 14) {
+                IconTile(systemName: "person.text.rectangle.fill", color: .gray)
+                TextField("User-Agent", text: $state.settings.subscriptionUserAgent)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .foregroundStyle(Theme.label)
+            }
+            .padding(.vertical, 2)
+        } header: {
+            Text("Подписки")
+        } footer: {
+            Text("Некоторые провайдеры отдают разный формат в зависимости от User-Agent.")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var diagnosticsSection: some View {
+        Section {
+            NavigationLink {
+                LogsView()
+            } label: {
+                rowLabel("Журнал", icon: "text.alignleft", color: .gray)
+            }
+            NavigationLink {
+                ConfigPreviewView()
+            } label: {
+                rowLabel("Конфигурация sing-box", icon: "curlybraces", color: .purple)
+            }
+            Picker(selection: $state.settings.logLevel) {
+                ForEach(["error", "warn", "info", "debug"], id: \.self) { Text($0).tag($0) }
+            } label: {
+                rowLabel("Уровень журнала", icon: "slider.horizontal.3", color: .gray)
+            }
+        } header: {
+            Text("Диагностика")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var aboutSection: some View {
+        Section {
+            infoRow("Версия", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")
+            infoRow("Ядро", "sing-box \(LibboxBootstrap.coreVersion)")
+        } header: {
+            Text("О приложении")
+        } footer: {
+            Text("Breeze работает на ядре sing-box. Распространяется под GPL-3.0.")
+        }
+        .listRowBackground(Theme.card)
     }
 
     private func toggleRow(_ title: String, icon: String, color: Color, isOn: Binding<Bool>) -> some View {
@@ -128,6 +218,18 @@ struct SettingsView: View {
             Text(title).foregroundStyle(Theme.label)
         }
         .padding(.vertical, 2)
+    }
+
+    private func integrationHint(_ icon: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 20)
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(Theme.secondaryLabel)
+        }
     }
 
     private func infoRow(_ title: String, _ value: String) -> some View {
