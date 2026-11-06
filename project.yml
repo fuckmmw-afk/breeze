@@ -4,13 +4,14 @@ options:
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
+  developmentLanguage: ru
   generateEmptyDirectories: true
 
 settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.1.0"
-    CURRENT_PROJECT_VERSION: "5"
+    CURRENT_PROJECT_VERSION: "6"
     TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_BITCODE: NO
     DEAD_CODE_STRIPPING: YES
@@ -66,6 +67,10 @@ targets:
         CFBundleDisplayName: Breeze
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: ru
+        CFBundleLocalizations:
+          - ru
+          - en
         LSRequiresIPhoneOS: true
         UILaunchScreen:
           UIColorName: LaunchBackground
