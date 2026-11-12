@@ -44,16 +44,38 @@ public final class TunnelManager: ObservableObject {
         return (Bundle.main.bundleIdentifier ?? "com.fuckmmw.breeze") + ".tunnel"
     }
 
+    private var loadTask: Task<Void, Never>?
+
+    /// Loads the VPN profile. Concurrent calls share one load, so a tap on "connect"
+    /// during launch can't create a duplicate profile.
     public func load() async {
+        if let loadTask {
+            await loadTask.value
+            return
+        }
+        let task = Task { await load0() }
+        loadTask = task
+        await task.value
+        loadTask = nil
+    }
+
+    private static func isActive(_ status: NEVPNStatus) -> Bool {
+        status == .connected || status == .connecting || status == .reasserting || status == .disconnecting
+    }
+
+    private func load0() async {
         do {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             let identifier = Self.tunnelBundleIdentifier
             EventLog.shared.add("load: \(managers.count) VPN profiles, tunnel id \(identifier)")
-            let match = managers.first {
+            let ours = managers.filter {
                 ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == identifier
             }
-            // drop stale profiles left from an older bundle id
-            for stale in managers where stale !== match {
+            // prefer the running profile, never pick one at random
+            let match = ours.first { Self.isActive($0.connection.status) } ?? ours.first
+            // remove duplicates and leftovers from older bundle ids, but never a running one
+            for stale in managers where stale !== match && !Self.isActive(stale.connection.status) {
+                EventLog.shared.add("removing stale VPN profile \((stale.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier ?? "?")")
                 try? await stale.removeFromPreferences()
             }
             if let match {
@@ -157,6 +179,9 @@ public final class TunnelManager: ObservableObject {
     }
 
     private func ensureManager() async throws -> NETunnelProviderManager {
+        if manager == nil {
+            await load()
+        }
         if let manager {
             return manager
         }
@@ -197,6 +222,7 @@ public final class TunnelManager: ObservableObject {
             if let group {
                 options[SharedGroup.optionKey] = group as NSString
             }
+            options[TunnelProtocol.portKey] = NSNumber(value: LibboxBootstrap.commandPort)
             EventLog.shared.add("startVPNTunnel: config \(config.count) bytes, group \(group ?? "none")")
             try manager.connection.startVPNTunnel(options: options)
         } catch {

@@ -7,6 +7,8 @@ struct BreezeApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        let identity = SigningInfo.app().applicationIdentifier + "|" + TunnelManager.tunnelBundleIdentifier
+        LibboxBootstrap.setCommandPort(LibboxBootstrap.derivePort(from: identity))
         LibboxBootstrap.setup()
     }
 

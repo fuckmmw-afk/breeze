@@ -365,7 +365,7 @@ struct LogsView: View {
     private var diagnosticsFooter: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Статус: \(statusText) · группа: \(state.sharedGroup ?? "нет")")
-            Text("Расширение: \(TunnelManager.tunnelBundleIdentifier)")
+            Text("Расширение: \(TunnelManager.tunnelBundleIdentifier) · порт \(LibboxBootstrap.commandPort)")
             if let error = state.tunnel.lastError {
                 Text("Ошибка: \(error)").foregroundStyle(Theme.bad)
             }
@@ -425,7 +425,7 @@ struct LogsView: View {
         let group = state.sharedGroup
         return [
             "Breeze \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") core \(LibboxBootstrap.coreVersion)",
-            "status: \(statusText), group: \(group ?? "none"), extension: \(TunnelManager.tunnelBundleIdentifier)",
+            "status: \(statusText), group: \(group ?? "none"), extension: \(TunnelManager.tunnelBundleIdentifier), port: \(LibboxBootstrap.commandPort)",
             "error: \(state.tunnel.lastError ?? "none")",
             "--- signing", SigningInfo.report(),
             "--- app events", events.lines.joined(separator: "\n"),

@@ -135,11 +135,13 @@ final class AppState: ObservableObject {
 
     func latency(for tag: String) -> Int? {
         if tunnel.isConnected {
+            // only results measured by the running core; offline results would be misleading
             for group in [proxyGroup, autoGroup].compactMap({ $0 }) {
                 if let item = group.items.first(where: { $0.tag == tag }), item.urlTestDelay != 0 {
                     return Int(item.urlTestDelay)
                 }
             }
+            return nil
         }
         return pingResults[tag]
     }
@@ -148,6 +150,7 @@ final class AppState: ObservableObject {
 
     private func tunnelStatusChanged(_ status: NEVPNStatus) {
         if status == .connected {
+            pingResults = [:]
             statusClient.connect()
             groupClient.connect()
         } else if status == .disconnected || status == .invalid {
@@ -254,6 +257,13 @@ final class AppState: ObservableObject {
     func select(_ tag: String) {
         selectedServer = tag
         if tunnel.isConnected {
+            let selectorHasTag = proxyGroup?.items.contains { $0.tag == tag } ?? false
+            if !selectorHasTag {
+                // e.g. "auto" is only in the config while it is selected: rebuild
+                scheduleReload()
+                publishIntegrations()
+                return
+            }
             do {
                 try TunnelCommands.selectOutbound(group: ConfigBuilder.selectorTag, outbound: tag)
             } catch {
@@ -398,8 +408,11 @@ final class AppState: ObservableObject {
             var subscription = subscriptions[index]
             apply(fetched, to: &subscription)
             subscriptions[index] = subscription
-            if !silent { show("Обновлено: \(fetched.servers.count) серверов") }
-            if id == activeSubscription?.id { scheduleReload() }
+            if !silent {
+                show("Обновлено: \(fetched.servers.count) серверов")
+                // background refreshes apply on the next connect instead of dropping the tunnel
+                if id == activeSubscription?.id { scheduleReload() }
+            }
         } catch {
             if !silent { show(error.localizedDescription) }
         }

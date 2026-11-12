@@ -16,6 +16,7 @@ public struct TunnelRuntimeOptions: Codable {
 public enum TunnelProtocol {
     public static let configKey = "config"
     public static let runtimeKey = "runtime"
+    public static let portKey = "commandPort"
 
     public struct Message: Codable {
         public var command: String
@@ -41,6 +42,16 @@ enum TunnelStore {
     static var configURL: URL { BreezePaths.base.appendingPathComponent("tunnel-config.json") }
     static var runtimeURL: URL { BreezePaths.base.appendingPathComponent("tunnel-runtime.json") }
     static var groupURL: URL { BreezePaths.base.appendingPathComponent("tunnel-group.txt") }
+    static var portURL: URL { BreezePaths.base.appendingPathComponent("tunnel-port.txt") }
+
+    static func save(port: Int32) {
+        try? String(port).data(using: .utf8)?.write(to: portURL, options: .atomic)
+    }
+
+    static func loadPort() -> Int32? {
+        guard let data = try? Data(contentsOf: portURL), let text = String(data: data, encoding: .utf8) else { return nil }
+        return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
 
     static func save(group: String) {
         try? group.data(using: .utf8)?.write(to: groupURL, options: .atomic)
@@ -87,9 +98,12 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
     private var sharedDirectory: URL?
 
     override open func startTunnel(options: [String: NSObject]?) async throws {
+        BreezePaths.prepare()
         if let group = options?[SharedGroup.optionKey] as? String, !group.isEmpty {
-            BreezePaths.prepare()
             TunnelStore.save(group: group)
+        }
+        if let port = (options?[TunnelProtocol.portKey] as? NSNumber)?.int32Value, port > 0 {
+            TunnelStore.save(port: port)
         }
         sharedDirectory = SharedGroup.container(TunnelStore.loadGroup()) ?? SharedGroup.container(SharedGroup.discover())
         diag = DiagnosticLog(directory: sharedDirectory)
@@ -105,9 +119,13 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func startTunnel0(_ options: [String: NSObject]?) async throws {
+        if let port = TunnelStore.loadPort() {
+            LibboxBootstrap.setCommandPort(port)
+        }
         if let error = LibboxBootstrap.setup() {
             throw BreezeError("Не удалось запустить ядро: \(error.localizedDescription)").nsError
         }
+        diag.write("command port \(LibboxBootstrap.commandPort)")
         diag.write("libbox setup ok, core \(LibboxBootstrap.coreVersion), base=\(BreezePaths.base.path)")
 
         if let config = options?[TunnelProtocol.configKey] as? String, !config.isEmpty {
@@ -125,6 +143,7 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
             throw BreezeError("Нет конфигурации. Откройте Breeze и подключитесь из приложения.").nsError
         }
         diag.write("config loaded: \(config.count) bytes")
+        diag.write("selected: \(Self.describeSelection(config))")
 
         var error: NSError?
         let stderrDir = sharedDirectory ?? BreezePaths.temp
@@ -141,16 +160,53 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
         guard let server else {
             throw BreezeError("Не удалось создать командный сервер").nsError
         }
-        do {
-            try server.start()
-        } catch {
-            throw BreezeError("Командный сервер: \(error.localizedDescription)").nsError
+        // a previous tunnel instance may still be releasing the port
+        var started = false
+        var lastError: Error?
+        for attempt in 0 ..< 15 {
+            do {
+                try server.start()
+                started = true
+                break
+            } catch {
+                lastError = error
+                diag.write("command server attempt \(attempt + 1): \(error.localizedDescription)")
+                try? await Task.sleep(nanoseconds: 400 * NSEC_PER_MSEC)
+            }
+        }
+        if !started {
+            throw BreezeError("Командный сервер: \(lastError?.localizedDescription ?? "?")").nsError
         }
         commandServer = server
         diag.write("command server started")
         writeMessage("(breeze) tunnel starting")
 
         try startService(withLogFile(config))
+    }
+
+    /// Selected outbound with secrets masked, for diagnostics.
+    static func describeSelection(_ config: String) -> String {
+        guard let data = config.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let outbounds = root["outbounds"] as? [[String: Any]]
+        else { return "?" }
+        let selector = outbounds.first { $0["tag"] as? String == "proxy" }
+        let tag = selector?["default"] as? String ?? "?"
+        guard var outbound = outbounds.first(where: { $0["tag"] as? String == tag }) else { return tag }
+        for key in ["uuid", "password"] {
+            if let value = outbound[key] as? String {
+                outbound[key] = String(value.prefix(4)) + "…"
+            }
+        }
+        if var tls = outbound["tls"] as? [String: Any], var reality = tls["reality"] as? [String: Any], let key = reality["public_key"] as? String {
+            reality["public_key"] = String(key.prefix(6)) + "…"
+            tls["reality"] = reality
+            outbound["tls"] = tls
+        }
+        guard let json = try? JSONSerialization.data(withJSONObject: outbound, options: [.sortedKeys]),
+              let text = String(data: json, encoding: .utf8)
+        else { return tag }
+        return text
     }
 
     /// Mirrors sing-box logs into the shared container so the app can show them after a failure.

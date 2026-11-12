@@ -20,7 +20,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Frameworks/Libbox.xcframework
-          key: libbox-${{ env.SING_BOX_VERSION }}-ios-v1
+          key: libbox-${{ env.SING_BOX_VERSION }}-ios-v2-port
 
       - name: Checkout sing-box
         if: steps.libbox-cache.outputs.cache-hit != 'true'
@@ -36,6 +36,32 @@ jobs:
         with:
           go-version: '~1.24.10'
           cache-dependency-path: sing-box/go.sum
+
+      - name: Patch Libbox command port
+        if: steps.libbox-cache.outputs.cache-hit != 'true'
+        run: |
+          # tvOS-mode command channel uses a fixed 127.0.0.1:8964; make it configurable
+          cat > sing-box/experimental/libbox/breeze_port.go <<'GO'
+          package libbox
+
+          import "strconv"
+
+          var sCommandPort int32 = 8964
+
+          // SetCommandServerPort selects the loopback port of the command channel (tvOS mode).
+          func SetCommandServerPort(port int32) {
+          	if port > 0 && port < 65536 {
+          		sCommandPort = port
+          	}
+          }
+
+          func commandServerAddress() string {
+          	return "127.0.0.1:" + strconv.Itoa(int(sCommandPort))
+          }
+          GO
+          sed -i '' 's/"127.0.0.1:8964"/commandServerAddress()/' sing-box/experimental/libbox/command_client.go sing-box/experimental/libbox/command_server.go
+          grep -n "commandServerAddress" sing-box/experimental/libbox/*.go
+          test "$(grep -c 'commandServerAddress()' sing-box/experimental/libbox/command_client.go sing-box/experimental/libbox/command_server.go | awk -F: '{s+=$2} END {print s}')" = "2"
 
       - name: Build Libbox
         if: steps.libbox-cache.outputs.cache-hit != 'true'

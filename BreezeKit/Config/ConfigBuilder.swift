@@ -17,14 +17,19 @@ public enum ConfigBuilder {
         let tags = servers.map(\.name)
 
         let defaultTag: String
-        if let selected, selected == autoTag || tags.contains(selected) {
+        if let selected, selected == autoTag, tags.count > 1 {
+            defaultTag = autoTag
+        } else if let selected, tags.contains(selected) {
             defaultTag = selected
         } else {
             defaultTag = tags.count > 1 ? autoTag : (tags.first ?? directTag)
         }
+        // the urltest group probes every server periodically; only run it when it is actually used,
+        // the tunnel extension has a tight memory budget
+        let useAuto = defaultTag == autoTag
 
         var selectorItems = tags
-        if tags.count > 1 {
+        if useAuto {
             selectorItems.insert(autoTag, at: 0)
         }
         if selectorItems.isEmpty {
@@ -37,13 +42,13 @@ public enum ConfigBuilder {
             "default": .string(defaultTag),
             "interrupt_exist_connections": .bool(true),
         ]))
-        if tags.count > 1 {
+        if useAuto {
             outbounds.append(.object([
                 "type": .string("urltest"),
                 "tag": .string(autoTag),
                 "outbounds": .array(tags.map { .string($0) }),
                 "url": .string(settings.urlTestURL),
-                "interval": .string("5m"),
+                "interval": .string("10m"),
                 "tolerance": .int(80),
                 "idle_timeout": .string("30m"),
                 "interrupt_exist_connections": .bool(false),
@@ -65,11 +70,8 @@ public enum ConfigBuilder {
             "inbounds": .array([tun(settings)]),
             "outbounds": .array(outbounds),
             "route": route(settings, ruleSets: availableRuleSets(ruleSetDirectory)),
+            // no cache_file: it would restore an old selector choice over the one picked in the app
             "experimental": .object([
-                "cache_file": .object([
-                    "enabled": .bool(true),
-                    "store_rdrc": .bool(true),
-                ]),
                 "clash_api": .object([
                     "default_mode": .string(settings.routingMode.rawValue),
                 ]),
@@ -139,10 +141,10 @@ public enum ConfigBuilder {
                     "server": .string(settings.dns.server),
                     "detour": .string(selectorTag),
                 ]),
+                // system resolver, like other clients: operators may answer differently than public DNS
                 .object([
-                    "type": .string("udp"),
+                    "type": .string("local"),
                     "tag": .string("dns-direct"),
-                    "server": .string(settings.directDNS),
                 ]),
             ]),
             "rules": .array(rules),
