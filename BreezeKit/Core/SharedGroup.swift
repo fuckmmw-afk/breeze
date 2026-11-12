@@ -42,6 +42,7 @@ public enum SharedGroup {
 /// Timestamped step log written by the tunnel extension into the shared group.
 public final class DiagnosticLog {
     public static let fileName = "tunnel-diag.log"
+    public static let launchName = "tunnel-launch.log"
     public static let boxLogName = "box.log"
     public static let stderrName = "stderr.log"
 

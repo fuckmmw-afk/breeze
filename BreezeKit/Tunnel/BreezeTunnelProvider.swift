@@ -36,6 +36,42 @@ public enum TunnelProtocol {
     }
 }
 
+/// Earliest possible breadcrumbs: written from init(), before the core does anything,
+/// into the shared group (or the extension's own container if there is none).
+enum LaunchProbe {
+    static let fileName = "tunnel-launch.log"
+    private static let lock = NSLock()
+    private static var exceptionHandlerInstalled = false
+
+    static func record(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        BreezePaths.prepare()
+        let dir = SharedGroup.container(TunnelStore.loadGroup()) ?? SharedGroup.container(SharedGroup.discover()) ?? BreezePaths.base
+        let url = dir.appendingPathComponent(fileName)
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 64 * 1024 {
+            try? Data().write(to: url)
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm:ss.SSS"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let line = "\(formatter.string(from: Date())) [\(version)] \(message)\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+        if !exceptionHandlerInstalled {
+            exceptionHandlerInstalled = true
+            NSSetUncaughtExceptionHandler { exception in
+                LaunchProbe.record("uncaught exception: \(exception.name.rawValue) \(exception.reason ?? "")")
+            }
+        }
+    }
+}
+
 /// The extension persists the last config so that on-demand / system restarts work
 /// without the app being involved.
 enum TunnelStore {
@@ -97,7 +133,13 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
     private var diag = DiagnosticLog(directory: nil)
     private var sharedDirectory: URL?
 
+    override public init() {
+        super.init()
+        LaunchProbe.record("process launched pid \(getpid())")
+    }
+
     override open func startTunnel(options: [String: NSObject]?) async throws {
+        LaunchProbe.record("startTunnel entered, options: \(options?.keys.sorted().joined(separator: ",") ?? "nil")")
         BreezePaths.prepare()
         if let group = options?[SharedGroup.optionKey] as? String, !group.isEmpty {
             TunnelStore.save(group: group)

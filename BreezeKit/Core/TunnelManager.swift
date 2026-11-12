@@ -14,6 +14,9 @@ public final class TunnelManager: ObservableObject {
     private var manager: NETunnelProviderManager?
     private var currentGroup: String?
     private var reachedConnected = false
+    private var startRequestedAt = Date.distantPast
+    private var lastStart: (config: String, runtime: TunnelRuntimeOptions, group: String?, onDemand: Bool)?
+    private var recoveryAttempted = false
     private var observer: NSObjectProtocol?
 
     public var isConnected: Bool { status == .connected }
@@ -128,6 +131,7 @@ public final class TunnelManager: ObservableObject {
         connectedDate = newStatus == .connected ? manager.connection.connectedDate : nil
         if newStatus == .connected {
             reachedConnected = true
+            recoveryAttempted = false
         }
         if newStatus == .disconnected, previous != .disconnected, previous != .invalid {
             let failedStart = !reachedConnected
@@ -138,7 +142,15 @@ public final class TunnelManager: ObservableObject {
 
     /// Last "FAILED" line the extension left in the shared diagnostics log.
     private func extensionFailure() -> String? {
-        guard let text = DiagnosticLog.read(DiagnosticLog.fileName, group: currentGroup ?? SharedGroup.discover()) else { return nil }
+        let group = currentGroup ?? SharedGroup.discover()
+        // ignore a log left over from an earlier run
+        if let dir = SharedGroup.container(group),
+           let modified = (try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(DiagnosticLog.fileName).path))?[.modificationDate] as? Date,
+           modified < startRequestedAt
+        {
+            return nil
+        }
+        guard let text = DiagnosticLog.read(DiagnosticLog.fileName, group: group) else { return nil }
         guard let line = text.split(separator: "\n").last(where: { $0.contains("FAILED") }),
               let range = line.range(of: "FAILED ")
         else { return nil }
@@ -151,6 +163,9 @@ public final class TunnelManager: ObservableObject {
     }
 
     private func fetchDisconnectError(failedStart: Bool) async {
+        if failedStart {
+            await stopOnDemandLoop()
+        }
         if failedStart, let failure = extensionFailure() {
             EventLog.shared.add("extension failure: \(failure)")
             lastError = failure
@@ -166,6 +181,20 @@ public final class TunnelManager: ObservableObject {
         } catch {
             let nsError = error as NSError
             EventLog.shared.add("last disconnect error: \(Self.describe(error))")
+            // pluginFailed: iOS could not launch the extension, typically a VPN profile bound to an
+            // older signature of the app; recreate the profile once and retry
+            if failedStart, nsError.domain == NEVPNConnectionErrorDomain, nsError.code == 12, !recoveryAttempted, let lastStart {
+                recoveryAttempted = true
+                EventLog.shared.add("pluginFailed: recreating VPN profile and retrying")
+                lastError = nil
+                await recreateProfile()
+                await start(config: lastStart.config, runtime: lastStart.runtime, group: lastStart.group, onDemand: lastStart.onDemand, isRetry: true)
+                return
+            }
+            if nsError.domain == NEVPNConnectionErrorDomain, nsError.code == 12 {
+                lastError = "iOS не смогла запустить VPN-расширение (ошибка 12). Переподпишите приложение вместе с расширениями и удалите профиль Breeze в Настройки → Основные → VPN, затем подключитесь снова."
+                return
+            }
             if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
                 lastError = "\(nsError.localizedDescription) (\(underlying.localizedDescription))"
             } else if nsError.domain == NEVPNConnectionErrorDomain,
@@ -201,7 +230,37 @@ public final class TunnelManager: ObservableObject {
         return manager
     }
 
-    public func start(config: String, runtime: TunnelRuntimeOptions, group: String? = nil) async {
+    /// Turns off On Demand after a failed start, otherwise iOS keeps relaunching a broken tunnel.
+    private func stopOnDemandLoop() async {
+        guard let manager, manager.isOnDemandEnabled else { return }
+        manager.isOnDemandEnabled = false
+        try? await manager.saveToPreferences()
+        EventLog.shared.add("on-demand disabled after a failed start")
+    }
+
+    private func recreateProfile() async {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+            self.observer = nil
+        }
+        if let manager {
+            try? await manager.removeFromPreferences()
+        }
+        manager = nil
+        if let managers = try? await NETunnelProviderManager.loadAllFromPreferences() {
+            for stale in managers where !Self.isActive(stale.connection.status) {
+                try? await stale.removeFromPreferences()
+            }
+        }
+        try? await Task.sleep(nanoseconds: 500 * NSEC_PER_MSEC)
+    }
+
+    public func start(config: String, runtime: TunnelRuntimeOptions, group: String? = nil, onDemand: Bool = false, isRetry: Bool = false) async {
+        if !isRetry {
+            recoveryAttempted = false
+        }
+        lastStart = (config, runtime, group, onDemand)
+        startRequestedAt = Date()
         lastError = nil
         currentGroup = group
         reachedConnected = false
@@ -209,8 +268,18 @@ public final class TunnelManager: ObservableObject {
         defer { isBusy = false }
         do {
             let manager = try await ensureManager()
+            // enable + On Demand go into one save before starting, never while connecting
+            var changed = false
             if !manager.isEnabled {
                 manager.isEnabled = true
+                changed = true
+            }
+            if manager.isOnDemandEnabled != onDemand {
+                manager.isOnDemandEnabled = onDemand
+                manager.onDemandRules = onDemand ? [Self.onDemandRule()] : []
+                changed = true
+            }
+            if changed {
                 try await manager.saveToPreferences()
                 try await manager.loadFromPreferences()
             }
@@ -273,6 +342,12 @@ public final class TunnelManager: ObservableObject {
                 continuation.resume(returning: false)
             }
         }
+    }
+
+    private static func onDemandRule() -> NEOnDemandRule {
+        let rule = NEOnDemandRuleConnect()
+        rule.interfaceTypeMatch = .any
+        return rule
     }
 
     public func setAlwaysOn(_ enabled: Bool) async {

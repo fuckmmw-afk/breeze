@@ -213,10 +213,7 @@ final class AppState: ObservableObject {
             return
         }
         EventLog.shared.add("config check ok")
-        await tunnel.start(config: config, runtime: runtime, group: sharedGroup)
-        if settings.connectOnDemand {
-            await tunnel.setAlwaysOn(true)
-        }
+        await tunnel.start(config: config, runtime: runtime, group: sharedGroup, onDemand: settings.connectOnDemand)
     }
 
     /// Re-applies the config to a running tunnel (debounced).
@@ -242,7 +239,7 @@ final class AppState: ObservableObject {
             // fallback: full restart
             await tunnel.stop()
             try? await Task.sleep(nanoseconds: 800 * NSEC_PER_MSEC)
-            await tunnel.start(config: config, runtime: runtime, group: sharedGroup)
+            await tunnel.start(config: config, runtime: runtime, group: sharedGroup, onDemand: settings.connectOnDemand)
         } else {
             statusClient.disconnect()
             groupClient.disconnect()

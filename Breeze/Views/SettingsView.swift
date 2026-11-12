@@ -413,7 +413,11 @@ struct LogsView: View {
         case .live, .app:
             fileText = nil
         case .startup:
-            fileText = DiagnosticLog.read(DiagnosticLog.fileName, group: state.sharedGroup)
+            let launch = DiagnosticLog.read(DiagnosticLog.launchName, group: state.sharedGroup, maxBytes: 8 * 1024)
+            let diag = DiagnosticLog.read(DiagnosticLog.fileName, group: state.sharedGroup)
+            fileText = [launch.map { "— запуски процесса —\n" + $0 }, diag.map { "— последний старт —\n" + $0 }]
+                .compactMap { $0 }
+                .joined(separator: "\n")
         case .core:
             fileText = DiagnosticLog.read(DiagnosticLog.boxLogName, group: state.sharedGroup)
         case .crash:
@@ -429,6 +433,7 @@ struct LogsView: View {
             "error: \(state.tunnel.lastError ?? "none")",
             "--- signing", SigningInfo.report(),
             "--- app events", events.lines.joined(separator: "\n"),
+            "--- launches", DiagnosticLog.read(DiagnosticLog.launchName, group: group, maxBytes: 8 * 1024) ?? "(empty)",
             "--- startup", DiagnosticLog.read(DiagnosticLog.fileName, group: group) ?? "(empty)",
             "--- core", DiagnosticLog.read(DiagnosticLog.boxLogName, group: group, maxBytes: 16 * 1024) ?? "(empty)",
             "--- stderr", DiagnosticLog.read(DiagnosticLog.stderrName, group: group, maxBytes: 16 * 1024) ?? "(empty)",
