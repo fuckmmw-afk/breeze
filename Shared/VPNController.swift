@@ -2,7 +2,8 @@ import Foundation
 import NetworkExtension
 
 /// Lightweight VPN control used by widgets, controls and intents.
-/// Starts the tunnel with the config the extension persisted on its last run.
+/// Starts the tunnel without options: the extension takes the app's shared config copy
+/// (or the one it persisted on its last run).
 enum VPNController {
     enum ControlError: LocalizedError {
         case notConfigured

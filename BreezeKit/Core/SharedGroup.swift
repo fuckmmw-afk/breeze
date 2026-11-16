@@ -5,6 +5,22 @@ import Foundation
 /// app was signed with, so nothing is hardcoded.
 public enum SharedGroup {
     public static let optionKey = "group"
+    /// The app keeps the config for its current selection here, so tunnel starts that
+    /// come without options (Control Center, widgets, On Demand) still use it.
+    public static let desiredConfigName = "desired-config.json"
+
+    public static func writeDesiredConfig(_ config: String, group: String?) {
+        guard let dir = container(group) else { return }
+        try? Data(config.utf8).write(to: dir.appendingPathComponent(desiredConfigName), options: .atomic)
+    }
+
+    public static func readDesiredConfig(group: String?) -> String? {
+        guard let dir = container(group),
+              let data = try? Data(contentsOf: dir.appendingPathComponent(desiredConfigName)),
+              let text = String(data: data, encoding: .utf8), !text.isEmpty
+        else { return nil }
+        return text
+    }
 
     /// App side: groups listed in embedded.mobileprovision that are actually usable.
     public static func discover() -> String? {

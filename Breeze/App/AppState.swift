@@ -48,6 +48,8 @@ final class AppState: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var reloadTask: Task<Void, Never>?
+    private var desiredConfigTask: Task<Void, Never>?
+    private var needsSelectionSync = false
     private var loading = true
 
     private static var stateURL: URL {
@@ -66,6 +68,7 @@ final class AppState: ObservableObject {
             settings = state.settings
         }
         loading = false
+        writeDesiredConfig()
 
         tunnel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -73,6 +76,9 @@ final class AppState: ObservableObject {
         tunnel.$status
             .removeDuplicates()
             .sink { [weak self] status in self?.tunnelStatusChanged(status) }
+            .store(in: &cancellables)
+        groupClient.$groups
+            .sink { [weak self] groups in self?.syncSelection(groups) }
             .store(in: &cancellables)
         for client in [statusClient, groupClient] {
             client.objectWillChange
@@ -92,6 +98,22 @@ final class AppState: ObservableObject {
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: Self.stateURL, options: .atomic)
         }
+        scheduleDesiredConfig()
+    }
+
+    private func scheduleDesiredConfig() {
+        desiredConfigTask?.cancel()
+        desiredConfigTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300 * NSEC_PER_MSEC)
+            guard !Task.isCancelled else { return }
+            self?.writeDesiredConfig()
+        }
+    }
+
+    /// Starts from Control Center, widgets and On Demand pass no config: the extension reads this copy.
+    private func writeDesiredConfig() {
+        guard !servers.isEmpty else { return }
+        SharedGroup.writeDesiredConfig(buildConfig(), group: sharedGroup)
     }
 
     // MARK: - Derived
@@ -151,6 +173,7 @@ final class AppState: ObservableObject {
     private func tunnelStatusChanged(_ status: NEVPNStatus) {
         if status == .connected {
             pingResults = [:]
+            needsSelectionSync = true
             statusClient.connect()
             groupClient.connect()
         } else if status == .disconnected || status == .invalid {
@@ -159,6 +182,24 @@ final class AppState: ObservableObject {
             AppStateLogClient.shared.disconnect()
         }
         publishIntegrations()
+    }
+
+    /// First selector state after connecting: if the core runs another server than the one
+    /// picked in the app (tunnel started with an older config), switch it to the picked one.
+    private func syncSelection(_ groups: [OutboundGroupInfo]) {
+        guard needsSelectionSync, tunnel.isConnected,
+              let group = groups.first(where: { $0.tag == ConfigBuilder.selectorTag })
+        else { return }
+        needsSelectionSync = false
+        guard let wanted = selectedServer, wanted != group.selected,
+              wanted == ConfigBuilder.autoTag || servers.contains(where: { $0.name == wanted })
+        else { return }
+        EventLog.shared.add("selector runs \(group.selected), app picked \(wanted): syncing")
+        if group.items.contains(where: { $0.tag == wanted }) {
+            try? TunnelCommands.selectOutbound(group: ConfigBuilder.selectorTag, outbound: wanted)
+        } else {
+            scheduleReload()
+        }
     }
 
     /// Feeds widgets, the Control Center toggle and the Live Activity.

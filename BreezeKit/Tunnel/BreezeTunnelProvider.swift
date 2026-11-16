@@ -172,6 +172,10 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
 
         if let config = options?[TunnelProtocol.configKey] as? String, !config.isEmpty {
             TunnelStore.save(config: config)
+        } else if let desired = SharedGroup.readDesiredConfig(group: TunnelStore.loadGroup() ?? SharedGroup.discover()) {
+            // started without options: take the app's current selection, not the last run's config
+            TunnelStore.save(config: desired)
+            diag.write("config from app's shared copy")
         }
         if let runtimeJSON = options?[TunnelProtocol.runtimeKey] as? String,
            let data = runtimeJSON.data(using: .utf8),

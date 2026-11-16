@@ -77,6 +77,8 @@ public final class CommandClient: ObservableObject {
             self.commandClient = nil
         }
         isConnected = false
+        // a stale selector state would show the previous run's server after reconnecting
+        groups = []
     }
 
     private func connect0() async {
