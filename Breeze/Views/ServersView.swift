@@ -64,6 +64,9 @@ struct ServersView: View {
 
     private var list: some View {
         List {
+            if !state.automationGroups.isEmpty, query.isEmpty {
+                automationSection
+            }
             if state.servers.count > 1, query.isEmpty {
                 Section {
                     AutoServerRow(
@@ -87,19 +90,59 @@ struct ServersView: View {
         }
     }
 
+    private var automationSection: some View {
+        let selection = state.currentSelection
+        return Section {
+            ForEach(state.automationGroups) { group in
+                AutomationServerRow(
+                    kind: group.kind,
+                    subtitle: automationSubtitle(group),
+                    current: state.network == group.kind,
+                    selected: selection == group.tag
+                ) {
+                    choose(group.tag)
+                }
+            }
+        } header: {
+            Text("Автоматизации")
+        } footer: {
+            Text("При подключении и смене сети туннель сам включает правило этой сети и выбирает самый быстрый сервер группы. Сервер, выбранный вручную, действует до смены сети.")
+        }
+    }
+
+    private func automationSubtitle(_ group: ConfigBuilder.AutomationGroup) -> String {
+        let count = group.members.count
+        let base = count == 1
+            ? (state.servers.first { $0.name == group.members[0] }?.cleanName ?? group.members[0])
+            : "Лучший из \(count) серверов"
+        if let node = state.server(behind: group.tag), count > 1 {
+            return "\(base) · сейчас \(node.cleanName)"
+        }
+        return base
+    }
+
     private var serverSection: some View {
         let selection = state.currentSelection
-        let activeAuto = selection == ConfigBuilder.autoTag ? state.effectiveServer?.name : nil
+        let activeAuto = state.servers.contains { $0.name == selection } ? nil : state.effectiveServer?.name
         let title = "\(state.activeSubscription?.name ?? "Серверы") · \(filtered.count)"
         return Section {
             ForEach(filtered) { node in
                 ServerButtonRow(
                     node: node,
                     latency: state.latency(for: node.name),
+                    testing: state.pingPending.contains(node.name),
                     selected: selection == node.name,
                     active: activeAuto == node.name
                 ) {
                     choose(node.name)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button {
+                        Task { await state.ping(node.name) }
+                    } label: {
+                        Label("Пинг", systemImage: "bolt.horizontal.fill")
+                    }
+                    .tint(Theme.accent)
                 }
             }
         } header: {
@@ -163,16 +206,58 @@ private struct AutoServerRow: View {
     }
 }
 
+private struct AutomationServerRow: View {
+    let kind: NetworkKind
+    let subtitle: String
+    let current: Bool
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                IconTile(systemName: kind == .wifi ? "wifi" : "antenna.radiowaves.left.and.right", color: kind == .wifi ? Theme.accent : .green, size: 40)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(kind.title)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Theme.label)
+                        if current {
+                            Text("сейчас")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Theme.tint))
+                        }
+                    }
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.secondaryLabel)
+                        .lineLimit(2)
+                }
+                Spacer()
+                if selected {
+                    SelectedMark()
+                }
+            }
+            .padding(.vertical, 6)
+        }
+        .listRowBackground(Theme.card)
+    }
+}
+
 private struct ServerButtonRow: View {
     let node: ServerNode
     let latency: Int?
+    let testing: Bool
     let selected: Bool
     let active: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            ServerRow(node: node, latency: latency, selected: selected, active: active)
+            ServerRow(node: node, latency: latency, testing: testing, selected: selected, active: active)
         }
         .listRowBackground(Theme.card)
     }
@@ -181,6 +266,7 @@ private struct ServerButtonRow: View {
 struct ServerRow: View {
     let node: ServerNode
     let latency: Int?
+    var testing = false
     let selected: Bool
     var active = false
 
@@ -205,7 +291,7 @@ struct ServerRow: View {
                 .lineLimit(1)
             }
             Spacer(minLength: 8)
-            LatencyBadge(latency: latency)
+            LatencyBadge(latency: latency, testing: testing)
             if selected {
                 SelectedMark()
             }

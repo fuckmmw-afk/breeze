@@ -27,6 +27,7 @@ struct BreezeApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                Appearance.apply(Appearance(rawValue: UserDefaults.standard.string(forKey: Appearance.storageKey) ?? "") ?? .system)
                 Task {
                     await state.tunnel.load()
                     state.publishIntegrations()

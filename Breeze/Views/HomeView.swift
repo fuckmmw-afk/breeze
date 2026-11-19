@@ -203,17 +203,18 @@ private struct ServerCard: View {
 
     var body: some View {
         let selection = state.currentSelection
-        let isAuto = selection == ConfigBuilder.autoTag
-        let node = isAuto ? state.effectiveServer : state.servers.first(where: { $0.name == selection })
+        // "auto" or an automation group: the real server is resolved through the core
+        let isAuto = !state.servers.contains { $0.name == selection }
+        let node = state.effectiveServer
         Button(action: action) {
             HStack(spacing: 14) {
                 if isAuto, node == nil {
-                    IconTile(systemName: "bolt.fill", size: 44)
+                    IconTile(systemName: icon(for: selection), size: 44)
                 } else {
                     FlagBadge(flag: node?.flag, size: 44)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(isAuto ? "Самый быстрый" : (node?.cleanName ?? selection))
+                    Text(isAuto ? state.title(for: selection) : (node?.cleanName ?? selection))
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.label)
                         .lineLimit(2)
@@ -227,7 +228,7 @@ private struct ServerCard: View {
                 }
                 Spacer(minLength: 8)
                 if let node {
-                    LatencyBadge(latency: state.latency(for: node.name))
+                    LatencyBadge(latency: state.latency(for: node.name), testing: state.pingPending.contains(node.name))
                 }
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
@@ -238,9 +239,20 @@ private struct ServerCard: View {
         .buttonStyle(PressableStyle())
     }
 
+    private func icon(for tag: String) -> String {
+        switch ConfigBuilder.networkKind(ofTag: tag) {
+        case .wifi: return "wifi"
+        case .cellular: return "antenna.radiowaves.left.and.right"
+        case nil: return "bolt.fill"
+        }
+    }
+
     private func subtitle(isAuto: Bool, node: ServerNode?) -> String {
         if isAuto {
             if let node { return "Авто · \(node.cleanName)" }
+            if let group = state.automationGroups.first(where: { $0.tag == state.currentSelection }) {
+                return "Лучший из \(group.members.count) · выбирается при подключении"
+            }
             return "Автовыбор по задержке · \(state.servers.count) серверов"
         }
         guard let node else { return "Сервер" }

@@ -5,6 +5,49 @@ public enum ConfigBuilder {
     public static let selectorTag = "proxy"
     public static let autoTag = "auto"
     public static let directTag = "direct"
+    public static let wifiTag = "breeze-wifi"
+    public static let cellularTag = "breeze-cellular"
+
+    public static func automationTag(for kind: NetworkKind) -> String {
+        kind == .wifi ? wifiTag : cellularTag
+    }
+
+    public static func networkKind(ofTag tag: String) -> NetworkKind? {
+        switch tag {
+        case wifiTag: return .wifi
+        case cellularTag: return .cellular
+        default: return nil
+        }
+    }
+
+    /// Loopback Clash API of the tunnel core, used by the app to probe single servers.
+    public struct Controller {
+        public var port: Int
+        public var secret: String
+
+        public init(port: Int, secret: String) {
+            self.port = port
+            self.secret = secret
+        }
+    }
+
+    /// An automation rule as it lands in the config.
+    public struct AutomationGroup: Identifiable {
+        public var kind: NetworkKind
+        public var tag: String
+        public var members: [String]
+
+        public var id: String { tag }
+    }
+
+    /// Automation groups that make it into the config (rules without servers are skipped).
+    public static func automationGroups(servers: [ServerNode], settings: AppSettings) -> [AutomationGroup] {
+        guard settings.automation.enabled else { return [] }
+        return NetworkKind.allCases.compactMap { kind in
+            let members = settings.automation[kind].members(in: servers)
+            return members.isEmpty ? nil : AutomationGroup(kind: kind, tag: automationTag(for: kind), members: members)
+        }
+    }
 
     /// Rule-set files shipped inside BreezeKit.framework (downloaded at build time),
     /// so the tunnel never has to fetch anything before it starts.
@@ -12,12 +55,15 @@ public enum ConfigBuilder {
         Bundle(for: BundleToken.self).url(forResource: "rules", withExtension: nil)
     }
 
-    public static func build(servers: [ServerNode], selected: String?, settings: AppSettings, ruleSetDirectory: URL? = bundledRuleSets) -> String {
+    public static func build(servers: [ServerNode], selected: String?, settings: AppSettings, controller: Controller? = nil, ruleSetDirectory: URL? = bundledRuleSets) -> String {
         var outbounds: [JSONValue] = []
         let tags = servers.map(\.name)
+        let automation = automationGroups(servers: servers, settings: settings)
 
         let defaultTag: String
-        if let selected, selected == autoTag, tags.count > 1 {
+        if let selected, automation.contains(where: { $0.tag == selected }) {
+            defaultTag = selected
+        } else if let selected, selected == autoTag, tags.count > 1 {
             defaultTag = autoTag
         } else if let selected, tags.contains(selected) {
             defaultTag = selected
@@ -29,6 +75,7 @@ public enum ConfigBuilder {
         let useAuto = defaultTag == autoTag
 
         var selectorItems = tags
+        selectorItems.insert(contentsOf: automation.map(\.tag), at: 0)
         if useAuto {
             selectorItems.insert(autoTag, at: 0)
         }
@@ -54,6 +101,29 @@ public enum ConfigBuilder {
                 "interrupt_exist_connections": .bool(false),
             ]))
         }
+        for group in automation {
+            if group.members.count == 1 {
+                // a fixed server: a one-item selector keeps the tag meaning "what Wi‑Fi/cellular uses"
+                outbounds.append(.object([
+                    "type": .string("selector"),
+                    "tag": .string(group.tag),
+                    "outbounds": .array([.string(group.members[0])]),
+                    "default": .string(group.members[0]),
+                ]))
+            } else {
+                // the tunnel re-tests this group right after switching networks and keeps the fastest
+                outbounds.append(.object([
+                    "type": .string("urltest"),
+                    "tag": .string(group.tag),
+                    "outbounds": .array(group.members.map { .string($0) }),
+                    "url": .string(settings.urlTestURL),
+                    "interval": .string("5m"),
+                    "tolerance": .int(50),
+                    "idle_timeout": .string("30m"),
+                    "interrupt_exist_connections": .bool(false),
+                ]))
+            }
+        }
         for server in servers {
             var outbound = server.outbound
             outbound["tag"] = .string(server.name)
@@ -72,12 +142,19 @@ public enum ConfigBuilder {
             "route": route(settings, ruleSets: availableRuleSets(ruleSetDirectory)),
             // no cache_file: it would restore an old selector choice over the one picked in the app
             "experimental": .object([
-                "clash_api": .object([
-                    "default_mode": .string(settings.routingMode.rawValue),
-                ]),
+                "clash_api": clashAPI(settings, controller: controller),
             ]),
         ]
         return JSONOutput.string(.object(config), pretty: true)
+    }
+
+    private static func clashAPI(_ settings: AppSettings, controller: Controller?) -> JSONValue {
+        var api: [String: JSONValue] = ["default_mode": .string(settings.routingMode.rawValue)]
+        if let controller {
+            api["external_controller"] = .string("127.0.0.1:\(controller.port)")
+            api["secret"] = .string(controller.secret)
+        }
+        return .object(api)
     }
 
     private static func tun(_ settings: AppSettings) -> JSONValue {

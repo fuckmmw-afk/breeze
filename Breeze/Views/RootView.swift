@@ -10,6 +10,7 @@ enum AppTab: Hashable {
 struct RootView: View {
     @EnvironmentObject private var state: AppState
     @State private var tab: AppTab = .home
+    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
 
     var body: some View {
         TabView(selection: $tab) {
@@ -26,6 +27,8 @@ struct RootView: View {
                 .tabItem { Label("Настройки", systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
         }
+        .onAppear { Appearance.apply(appearance) }
+        .onChange(of: appearance) { _, value in Appearance.apply(value) }
         .overlay(alignment: .top) {
             if let toast = state.toast {
                 ToastView(text: toast)

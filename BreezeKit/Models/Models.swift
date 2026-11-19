@@ -188,6 +188,94 @@ public enum PingMethod: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Network the device currently uses for its default route.
+public enum NetworkKind: String, Codable, CaseIterable, Identifiable {
+    case wifi
+    case cellular
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .wifi: return "Wi‑Fi"
+        case .cellular: return "Сотовая сеть"
+        }
+    }
+}
+
+/// What an automation rule does when the device moves to a network.
+public struct AutomationTarget: Codable, Equatable {
+    public enum Kind: String, Codable, CaseIterable, Identifiable {
+        case off
+        case server
+        case group
+
+        public var id: String { rawValue }
+    }
+
+    public var kind: Kind = .off
+    /// Server name for `.server`.
+    public var server: String?
+    /// `.group`: servers whose names contain any of these comma-separated words...
+    public var keywords = ""
+    /// ...plus servers picked by hand.
+    public var servers: [String] = []
+
+    public init() {}
+
+    public var keywordList: [String] {
+        keywords.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// Tags of the subscription servers this rule points at, in subscription order.
+    public func members(in nodes: [ServerNode]) -> [String] {
+        switch kind {
+        case .off:
+            return []
+        case .server:
+            guard let server, nodes.contains(where: { $0.name == server }) else { return [] }
+            return [server]
+        case .group:
+            let words = keywordList
+            let picked = Set(servers)
+            return nodes.filter { node in
+                picked.contains(node.name) || words.contains { node.name.localizedCaseInsensitiveContains($0) }
+            }.map(\.name)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? c.decode(Kind.self, forKey: .kind)) ?? .off
+        server = try? c.decode(String.self, forKey: .server)
+        keywords = (try? c.decode(String.self, forKey: .keywords)) ?? ""
+        servers = (try? c.decode([String].self, forKey: .servers)) ?? []
+    }
+}
+
+/// "On Wi‑Fi use this, on cellular use that": applied by the tunnel on connect and on every network change.
+public struct NetworkAutomation: Codable, Equatable {
+    public var enabled = false
+    public var wifi = AutomationTarget()
+    public var cellular = AutomationTarget()
+
+    public init() {}
+
+    public subscript(kind: NetworkKind) -> AutomationTarget {
+        get { kind == .wifi ? wifi : cellular }
+        set {
+            if kind == .wifi { wifi = newValue } else { cellular = newValue }
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
+        wifi = (try? c.decode(AutomationTarget.self, forKey: .wifi)) ?? AutomationTarget()
+        cellular = (try? c.decode(AutomationTarget.self, forKey: .cellular)) ?? AutomationTarget()
+    }
+}
+
 public struct AppSettings: Codable, Equatable {
     public var routingMode: RoutingMode = .rule
     public var bypassRussia = true
@@ -205,6 +293,9 @@ public struct AppSettings: Codable, Equatable {
     public var pingOnOpen = false
     public var liveActivity = true
     public var connectOnDemand = false
+    /// How many servers are probed at once; results stream in as each one finishes.
+    public var pingConcurrency = 32
+    public var automation = NetworkAutomation()
 
     public static let urlTestPresets: [(title: String, url: String)] = [
         ("Google", "https://www.gstatic.com/generate_204"),
@@ -220,6 +311,7 @@ public struct AppSettings: Codable, Equatable {
         bypassRussia != other.bypassRussia || blockAds != other.blockAds || enableIPv6 != other.enableIPv6
             || dns != other.dns || directDNS != other.directDNS || urlTestURL != other.urlTestURL
             || logLevel != other.logLevel || excludeAPNs != other.excludeAPNs
+            || automation != other.automation
     }
 
     public init(from decoder: Decoder) throws {
@@ -242,5 +334,7 @@ public struct AppSettings: Codable, Equatable {
         pingOnOpen = (try? c.decode(Bool.self, forKey: .pingOnOpen)) ?? defaults.pingOnOpen
         liveActivity = (try? c.decode(Bool.self, forKey: .liveActivity)) ?? defaults.liveActivity
         connectOnDemand = (try? c.decode(Bool.self, forKey: .connectOnDemand)) ?? defaults.connectOnDemand
+        pingConcurrency = (try? c.decode(Int.self, forKey: .pingConcurrency)) ?? defaults.pingConcurrency
+        automation = (try? c.decode(NetworkAutomation.self, forKey: .automation)) ?? defaults.automation
     }
 }

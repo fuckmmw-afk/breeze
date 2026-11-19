@@ -4,11 +4,14 @@ import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
+    @AppStorage(Appearance.storageKey) private var appearance: Appearance = .system
 
     var body: some View {
         NavigationStack {
             List {
                 modeSection
+                automationSection
+                appearanceSection
                 routingSection
                 networkSection
                 pingSection
@@ -49,6 +52,58 @@ struct SettingsView: View {
             }
         } header: {
             Text("Режим")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var automationSection: some View {
+        Section {
+            NavigationLink {
+                AutomationView()
+            } label: {
+                HStack(spacing: 14) {
+                    IconTile(systemName: "wand.and.stars", color: .purple)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Автоматизации").foregroundStyle(Theme.label)
+                        Text(automationSummary)
+                            .font(.footnote)
+                            .foregroundStyle(Theme.secondaryLabel)
+                            .lineLimit(2)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        } footer: {
+            Text("Свой сервер или группа серверов для Wi‑Fi и для сотовой сети.")
+        }
+        .listRowBackground(Theme.card)
+    }
+
+    private var automationSummary: String {
+        let automation = state.settings.automation
+        guard automation.enabled else { return "Выключены" }
+        let parts = NetworkKind.allCases.compactMap { kind -> String? in
+            let target = automation[kind]
+            switch target.kind {
+            case .off: return nil
+            case .server: return "\(kind.title): сервер"
+            case .group: return "\(kind.title): группа"
+            }
+        }
+        return parts.isEmpty ? "Включены, правил нет" : parts.joined(separator: " · ")
+    }
+
+    private var appearanceSection: some View {
+        Section {
+            Picker("Тема", selection: $appearance) {
+                ForEach(Appearance.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.vertical, 4)
+        } header: {
+            Text("Оформление")
+        } footer: {
+            Text("«Авто» следует системной теме iOS.")
         }
         .listRowBackground(Theme.card)
     }
@@ -123,11 +178,16 @@ struct SettingsView: View {
             } label: {
                 rowLabel("Таймаут", icon: "timer", color: .orange)
             }
+            Picker(selection: $state.settings.pingConcurrency) {
+                ForEach([8, 16, 32, 64], id: \.self) { Text("\($0)").tag($0) }
+            } label: {
+                rowLabel("Одновременно", icon: "speedometer", color: .teal)
+            }
             toggleRow("Проверять при открытии", icon: "arrow.clockwise", color: .green, isOn: $state.settings.pingOnOpen)
         } header: {
             Text("Проверка задержки")
         } footer: {
-            Text("Когда VPN подключён, задержку всегда меряет само ядро через серверы. Адрес проверки также используется для автовыбора самого быстрого сервера.")
+            Text("Серверы проверяются потоком: сразу несколько, и каждый результат появляется, как только готов. Когда VPN подключён, задержку меряет само ядро (не больше 16 одновременно). Свайп влево по серверу проверяет только его. Адрес проверки также используется для автовыбора самого быстрого сервера.")
         }
         .listRowBackground(Theme.card)
     }

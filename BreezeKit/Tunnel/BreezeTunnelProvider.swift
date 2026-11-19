@@ -132,6 +132,10 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
     public private(set) var runtimeOptions = TunnelRuntimeOptions()
     private var diag = DiagnosticLog(directory: nil)
     private var sharedDirectory: URL?
+    lazy var automation = NetworkAutomationRunner { [weak self] message in
+        self?.diag.write(message)
+        self?.writeMessage("(breeze) \(message)")
+    }
 
     override public init() {
         super.init()
@@ -227,7 +231,35 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
         diag.write("command server started")
         writeMessage("(breeze) tunnel starting")
 
-        try startService(withLogFile(config))
+        automation.configure(config: config, fresh: true)
+        try startServiceFallingBack(config)
+    }
+
+    /// The loopback Clash API is a convenience for the app; never let a busy port keep the tunnel down.
+    private func startServiceFallingBack(_ config: String) throws {
+        do {
+            try startService(withLogFile(config))
+        } catch {
+            guard let stripped = Self.withoutController(config) else { throw error }
+            diag.write("start failed (\(error.localizedDescription)), retrying without external controller")
+            stopService()
+            try startService(withLogFile(stripped))
+        }
+    }
+
+    static func withoutController(_ config: String) -> String? {
+        guard let data = config.data(using: .utf8),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var experimental = root["experimental"] as? [String: Any],
+              var api = experimental["clash_api"] as? [String: Any],
+              api["external_controller"] != nil
+        else { return nil }
+        api.removeValue(forKey: "external_controller")
+        api.removeValue(forKey: "secret")
+        experimental["clash_api"] = api
+        root["experimental"] = experimental
+        guard let patched = try? JSONSerialization.data(withJSONObject: root) else { return nil }
+        return String(data: patched, encoding: .utf8)
     }
 
     /// Selected outbound with secrets masked, for diagnostics.
@@ -323,8 +355,9 @@ open class BreezeTunnelProvider: NEPacketTunnelProvider {
             cancelTunnelWithError(BreezeError("Нет конфигурации").nsError)
             return
         }
+        automation.configure(config: config, fresh: false)
         do {
-            try startService(withLogFile(config))
+            try startServiceFallingBack(config)
         } catch {
             diag.write("reload FAILED \(error.localizedDescription)")
             cancelTunnelWithError(error)

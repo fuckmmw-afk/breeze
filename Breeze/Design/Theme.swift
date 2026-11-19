@@ -247,3 +247,40 @@ enum Format {
         return formatter.string(from: date)
     }
 }
+
+/// App-wide light/dark choice, applied to every window so sheets and alerts follow it too.
+enum Appearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    static let storageKey = "appearance"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "Авто"
+        case .light: return "Светлая"
+        case .dark: return "Тёмная"
+        }
+    }
+
+    var style: UIUserInterfaceStyle {
+        switch self {
+        case .system: return .unspecified
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    @MainActor
+    static func apply(_ appearance: Appearance) {
+        for scene in UIApplication.shared.connectedScenes {
+            guard let scene = scene as? UIWindowScene else { continue }
+            for window in scene.windows {
+                window.overrideUserInterfaceStyle = appearance.style
+            }
+        }
+    }
+}

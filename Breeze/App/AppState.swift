@@ -10,6 +10,8 @@ private struct PersistedState: Codable {
     var activeSubscriptionID: UUID?
     var selectedServer: String?
     var settings = AppSettings()
+    /// Network on which a server was picked by hand while automation is on.
+    var manualPick: NetworkKind?
 }
 
 @MainActor
@@ -37,7 +39,12 @@ final class AppState: ObservableObject {
     }
 
     @Published var pingResults: [String: Int] = [:]
+    /// Servers whose probe is in flight (spinner instead of a number).
+    @Published var pingPending: Set<String> = []
     @Published var testingLatency = false
+    @Published private(set) var network: NetworkKind?
+    /// Set when a server is picked by hand while automation is on; valid until the network changes.
+    @Published private(set) var manualPick: NetworkKind? { didSet { save() } }
     @Published var updatingIDs: Set<UUID> = []
     @Published var toast: String?
 
@@ -51,6 +58,18 @@ final class AppState: ObservableObject {
     private var desiredConfigTask: Task<Void, Never>?
     private var needsSelectionSync = false
     private var loading = true
+    private let pathMonitor = NWPathMonitor()
+
+    /// Loopback Clash API of the tunnel core (next to the command port) for single-server probes.
+    var controller: ConfigBuilder.Controller {
+        let key = "clashSecret"
+        let secret = UserDefaults.standard.string(forKey: key) ?? {
+            let value = UUID().uuidString
+            UserDefaults.standard.set(value, forKey: key)
+            return value
+        }()
+        return ConfigBuilder.Controller(port: Int(LibboxBootstrap.commandPort) + 1, secret: secret)
+    }
 
     private static var stateURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -66,9 +85,16 @@ final class AppState: ObservableObject {
             activeSubscriptionID = state.activeSubscriptionID
             selectedServer = state.selectedServer
             settings = state.settings
+            manualPick = state.manualPick
         }
+        network = NetworkKind(path: pathMonitor.currentPath)
         loading = false
         writeDesiredConfig()
+        pathMonitor.pathUpdateHandler = { path in
+            let kind = NetworkKind(path: path)
+            Task { @MainActor in AppState.shared.networkChanged(kind) }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "breeze.app.path"))
 
         tunnel.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -93,7 +119,8 @@ final class AppState: ObservableObject {
             subscriptions: subscriptions,
             activeSubscriptionID: activeSubscriptionID,
             selectedServer: selectedServer,
-            settings: settings
+            settings: settings,
+            manualPick: manualPick
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: Self.stateURL, options: .atomic)
@@ -134,10 +161,30 @@ final class AppState: ObservableObject {
         groupClient.groups.first { $0.tag == ConfigBuilder.autoTag }
     }
 
+    /// Automation groups present in the config: Wi‑Fi / cellular -> member servers.
+    var automationGroups: [ConfigBuilder.AutomationGroup] {
+        ConfigBuilder.automationGroups(servers: servers, settings: settings)
+    }
+
+    /// Automation tag for the current network, unless a server was picked by hand on it.
+    private var automationSelection: String? {
+        guard let network, manualPick != network else { return nil }
+        let tag = ConfigBuilder.automationTag(for: network)
+        return automationGroups.contains { $0.tag == tag } ? tag : nil
+    }
+
+    /// What the config's selector starts with.
+    var desiredSelection: String? {
+        automationSelection ?? selectedServer
+    }
+
     /// Tag currently selected in the selector (live from the core when connected).
     var currentSelection: String {
         if tunnel.isConnected, let group = proxyGroup, !group.selected.isEmpty {
             return group.selected
+        }
+        if let automationSelection {
+            return automationSelection
         }
         if let selectedServer, selectedServer == ConfigBuilder.autoTag || servers.contains(where: { $0.name == selectedServer }) {
             return selectedServer
@@ -145,18 +192,40 @@ final class AppState: ObservableObject {
         return servers.count > 1 ? ConfigBuilder.autoTag : (servers.first?.name ?? "")
     }
 
-    /// Real server behind the selection (resolves "auto").
+    /// Real server behind the selection (resolves "auto" and the automation groups).
     var effectiveServer: ServerNode? {
-        var tag = currentSelection
-        if tag == ConfigBuilder.autoTag {
-            guard let picked = autoGroup?.selected, !picked.isEmpty else { return nil }
-            tag = picked
+        server(behind: currentSelection)
+    }
+
+    func server(behind tag: String) -> ServerNode? {
+        var tag = tag
+        for _ in 0 ..< 3 {
+            if let node = servers.first(where: { $0.name == tag }) { return node }
+            if let group = groupClient.groups.first(where: { $0.tag == tag }), !group.selected.isEmpty {
+                tag = group.selected
+                continue
+            }
+            // offline: a one-server rule is known, a group is decided by the core
+            if let members = automationGroups.first(where: { $0.tag == tag })?.members {
+                if members.count == 1 { tag = members[0]; continue }
+                let measured = members.compactMap { name in pingResults[name].flatMap { $0 > 0 ? (name, $0) : nil } }
+                if let best = measured.min(by: { $0.1 < $1.1 }) { tag = best.0; continue }
+            }
+            return nil
         }
-        return servers.first { $0.name == tag }
+        return nil
+    }
+
+    /// Human title of a selector item.
+    func title(for tag: String) -> String {
+        if tag == ConfigBuilder.autoTag { return "Самый быстрый" }
+        if let kind = ConfigBuilder.networkKind(ofTag: tag) { return "Автоматизация · \(kind.title)" }
+        return servers.first { $0.name == tag }?.cleanName ?? tag
     }
 
     func latency(for tag: String) -> Int? {
         if tunnel.isConnected {
+            if let value = pingResults[tag] { return value }
             // only results measured by the running core; offline results would be misleading
             for group in [proxyGroup, autoGroup].compactMap({ $0 }) {
                 if let item = group.items.first(where: { $0.tag == tag }), item.urlTestDelay != 0 {
@@ -169,6 +238,17 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Tunnel
+
+    private func networkChanged(_ kind: NetworkKind?) {
+        guard kind != network else { return }
+        EventLog.shared.add("network: \(kind?.rawValue ?? "none")")
+        network = kind
+        // a hand-picked server only holds on the network it was picked on
+        if let manualPick, manualPick != kind { self.manualPick = nil }
+        // the tunnel switches by itself; the app only refreshes what the next start uses
+        scheduleDesiredConfig()
+        if settings.automation.enabled { publishIntegrations() }
+    }
 
     private func tunnelStatusChanged(_ status: NEVPNStatus) {
         if status == .connected {
@@ -191,8 +271,11 @@ final class AppState: ObservableObject {
               let group = groups.first(where: { $0.tag == ConfigBuilder.selectorTag })
         else { return }
         needsSelectionSync = false
-        guard let wanted = selectedServer, wanted != group.selected,
+        // the tunnel applies the automation itself on start
+        if settings.automation.enabled, ConfigBuilder.networkKind(ofTag: group.selected) != nil { return }
+        guard let wanted = desiredSelection, wanted != group.selected,
               wanted == ConfigBuilder.autoTag || servers.contains(where: { $0.name == wanted })
+              || automationGroups.contains(where: { $0.tag == wanted })
         else { return }
         EventLog.shared.add("selector runs \(group.selected), app picked \(wanted): syncing")
         if group.items.contains(where: { $0.tag == wanted }) {
@@ -206,7 +289,7 @@ final class AppState: ObservableObject {
     func publishIntegrations() {
         let selection = currentSelection
         let node = effectiveServer ?? servers.first { $0.name == selection }
-        let serverName = node?.cleanName ?? (selection == ConfigBuilder.autoTag ? "Самый быстрый" : selection)
+        let serverName = node?.cleanName ?? title(for: selection)
         WidgetStore.save(WidgetSnapshot(
             serverName: serverName,
             flag: node?.flag,
@@ -226,7 +309,7 @@ final class AppState: ObservableObject {
     }
 
     func buildConfig() -> String {
-        ConfigBuilder.build(servers: servers, selected: selectedServer, settings: settings)
+        ConfigBuilder.build(servers: servers, selected: desiredSelection, settings: settings, controller: controller)
     }
 
     var runtime: TunnelRuntimeOptions {
@@ -293,7 +376,16 @@ final class AppState: ObservableObject {
     // MARK: - Selection & mode
 
     func select(_ tag: String) {
-        selectedServer = tag
+        if settings.automation.enabled {
+            // picking the current network's own rule hands control back to the automation
+            let followsAutomation = network.map { ConfigBuilder.automationTag(for: $0) == tag } ?? false
+            manualPick = followsAutomation ? nil : network
+        }
+        if ConfigBuilder.networkKind(ofTag: tag) == nil {
+            selectedServer = tag
+        } else {
+            save()
+        }
         if tunnel.isConnected {
             let selectorHasTag = proxyGroup?.items.contains { $0.tag == tag } ?? false
             if !selectorHasTag {
@@ -329,43 +421,84 @@ final class AppState: ObservableObject {
     func testLatency() async {
         guard !testingLatency, !servers.isEmpty else { return }
         testingLatency = true
-        defer { testingLatency = false }
-        if tunnel.isConnected {
-            // the running core measures through its own outbounds
-            await Task.detached { try? TunnelCommands.urlTest(group: ConfigBuilder.selectorTag) }.value
-            try? await Task.sleep(nanoseconds: 1500 * NSEC_PER_MSEC)
-            return
-        }
         let targets = servers
         pingResults = [:]
+        pingPending = Set(targets.map(\.name))
+        defer {
+            testingLatency = false
+            pingPending = []
+        }
+        if tunnel.isConnected {
+            let measured = await measureThroughCore(targets)
+            if !measured {
+                // tunnel started with a config without the controller: the core tests the whole selector
+                await Task.detached { try? TunnelCommands.urlTest(group: ConfigBuilder.selectorTag) }.value
+                try? await Task.sleep(nanoseconds: 1500 * NSEC_PER_MSEC)
+            }
+            return
+        }
+        await measureOffline(targets)
+    }
+
+    /// Probes one server (swipe on a row).
+    func ping(_ tag: String) async {
+        guard let node = servers.first(where: { $0.name == tag }), !pingPending.contains(tag) else { return }
+        pingPending.insert(tag)
+        pingResults[tag] = nil
+        defer { pingPending.remove(tag) }
+        if tunnel.isConnected {
+            let measured = await measureThroughCore([node])
+            if !measured {
+                show("Переподключите VPN, чтобы проверять отдельные серверы")
+            }
+            return
+        }
+        await measureOffline([node])
+    }
+
+    private func record(_ tag: String, _ value: Int) {
+        pingResults[tag] = value
+        pingPending.remove(tag)
+    }
+
+    /// Through the running core's Clash API, so the numbers match what the tunnel sees.
+    /// The tunnel lives in a tight memory budget, hence the lower cap.
+    private func measureThroughCore(_ nodes: [ServerNode]) async -> Bool {
+        let controller = self.controller
+        let api = ClashDelay(port: controller.port, secret: controller.secret, concurrency: 16, timeoutMs: settings.pingTimeout)
+        defer { api.invalidate() }
+        guard await api.reachable() else { return false }
+        let url = settings.urlTestURL
+        await Concurrent.forEach(nodes.map(\.name), limit: min(settings.pingConcurrency, 16)) { name in
+            await api.delay(name: name, url: url) ?? -1
+        } onResult: { name, value in
+            record(name, value)
+        }
+        return true
+    }
+
+    private func measureOffline(_ nodes: [ServerNode]) async {
         switch settings.pingMethod {
         case .url:
             do {
                 try await ProxyLatencyTester.test(
-                    servers: targets,
+                    servers: nodes,
                     url: settings.urlTestURL,
-                    timeoutMs: settings.pingTimeout
+                    timeoutMs: settings.pingTimeout,
+                    concurrency: settings.pingConcurrency
                 ) { tag, value in
-                    await MainActor.run { AppState.shared.pingResults[tag] = value }
+                    await AppState.shared.record(tag, value)
                 }
             } catch {
                 show("Тест задержки: \(error.localizedDescription)")
             }
         case .tcp:
             let timeout = TimeInterval(settings.pingTimeout) / 1000
-            for start in stride(from: 0, to: targets.count, by: 16) {
-                let slice = Array(targets[start ..< min(start + 16, targets.count)])
-                await withTaskGroup(of: (String, Int).self) { group in
-                    for node in slice {
-                        let host = node.host
-                        let port = node.port
-                        let tag = node.name
-                        group.addTask { (tag, await TCPPing.measure(host: host, port: port, timeout: timeout)) }
-                    }
-                    for await (tag, value) in group {
-                        pingResults[tag] = value
-                    }
-                }
+            let endpoints = nodes.map { TCPPing.Endpoint(tag: $0.name, host: $0.host, port: $0.port) }
+            await Concurrent.forEach(endpoints, limit: settings.pingConcurrency) { endpoint in
+                await TCPPing.measure(host: endpoint.host, port: endpoint.port, timeout: timeout)
+            } onResult: { endpoint, value in
+                record(endpoint.tag, value)
             }
         }
     }
@@ -535,6 +668,12 @@ final class AppState: ObservableObject {
 
 /// TCP handshake time to a server, used when the tunnel is down.
 enum TCPPing {
+    struct Endpoint: Sendable {
+        var tag: String
+        var host: String
+        var port: Int
+    }
+
     static func measure(host: String, port: Int, timeout: TimeInterval = 3) async -> Int {
         guard let nwPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)) else { return -1 }
         let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)

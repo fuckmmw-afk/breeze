@@ -10,7 +10,7 @@ public enum ProxyLatencyTester {
         servers: [ServerNode],
         url: String,
         timeoutMs: Int,
-        concurrency: Int = 12,
+        concurrency: Int = 32,
         onResult: @escaping @Sendable (String, Int) async -> Void
     ) async throws {
         guard !servers.isEmpty else { return }
@@ -32,47 +32,12 @@ public enum ProxyLatencyTester {
         // let the controller start listening
         try? await Task.sleep(nanoseconds: 150 * NSEC_PER_MSEC)
 
-        let session = URLSession(configuration: {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.connectionProxyDictionary = [:]
-            configuration.timeoutIntervalForRequest = Double(timeoutMs) / 1000 + 3
-            configuration.httpMaximumConnectionsPerHost = concurrency
-            return configuration
-        }())
-        defer { session.invalidateAndCancel() }
-
-        let names = servers.map(\.name)
-        for start in stride(from: 0, to: names.count, by: concurrency) {
-            try Task.checkCancellation()
-            let slice = Array(names[start ..< min(start + concurrency, names.count)])
-            await withTaskGroup(of: (String, Int).self) { group in
-                for name in slice {
-                    group.addTask {
-                        (name, await delay(session: session, port: port, name: name, url: url, timeoutMs: timeoutMs))
-                    }
-                }
-                for await (name, value) in group {
-                    await onResult(name, value)
-                }
-            }
-        }
-    }
-
-    private static func delay(session: URLSession, port: Int, name: String, url: String, timeoutMs: Int) async -> Int {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-        guard let escapedName = name.addingPercentEncoding(withAllowedCharacters: allowed),
-              let escapedURL = url.addingPercentEncoding(withAllowedCharacters: allowed),
-              let requestURL = URL(string: "http://127.0.0.1:\(port)/proxies/\(escapedName)/delay?timeout=\(min(timeoutMs, 30000))&url=\(escapedURL)")
-        else { return -1 }
-        do {
-            let (data, response) = try await session.data(from: requestURL)
-            guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let delay = (json["delay"] as? NSNumber)?.intValue
-            else { return -1 }
-            return delay
-        } catch {
-            return -1
+        let controller = ClashDelay(port: port, secret: nil, concurrency: concurrency, timeoutMs: timeoutMs)
+        defer { controller.invalidate() }
+        await Concurrent.forEach(servers.map(\.name), limit: concurrency) { name in
+            await controller.delay(name: name, url: url) ?? -1
+        } onResult: { name, value in
+            await onResult(name, value)
         }
     }
 
@@ -98,6 +63,96 @@ public enum ProxyLatencyTester {
             ],
         ]
         return JSONOutput.string(config)
+    }
+}
+
+/// `GET /proxies/{name}/delay` against a sing-box Clash API on localhost: the in-app
+/// tester's or the running tunnel's.
+public final class ClashDelay: @unchecked Sendable {
+    private let port: Int
+    private let secret: String?
+    private let timeoutMs: Int
+    private let session: URLSession
+
+    public init(port: Int, secret: String?, concurrency: Int, timeoutMs: Int) {
+        self.port = port
+        self.secret = secret
+        self.timeoutMs = timeoutMs
+        session = URLSession(configuration: {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.connectionProxyDictionary = [:]
+            configuration.timeoutIntervalForRequest = Double(timeoutMs) / 1000 + 3
+            configuration.httpMaximumConnectionsPerHost = max(concurrency, 1)
+            return configuration
+        }())
+    }
+
+    public func invalidate() {
+        session.invalidateAndCancel()
+    }
+
+    private func request(_ path: String) -> URLRequest? {
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return nil }
+        var request = URLRequest(url: url)
+        if let secret, !secret.isEmpty {
+            request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
+    /// Whether the API answers at all (tunnels started with an older config have none).
+    public func reachable() async -> Bool {
+        guard var request = request("/") else { return false }
+        request.timeoutInterval = 1.5
+        guard let (_, response) = try? await session.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// Delay in ms, -1 when the server failed, nil when the API itself is unreachable.
+    public func delay(name: String, url: String) async -> Int? {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        guard let escapedName = name.addingPercentEncoding(withAllowedCharacters: allowed),
+              let escapedURL = url.addingPercentEncoding(withAllowedCharacters: allowed),
+              let request = request("/proxies/\(escapedName)/delay?timeout=\(min(timeoutMs, 30000))&url=\(escapedURL)")
+        else { return -1 }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let delay = (json["delay"] as? NSNumber)?.intValue
+            else { return -1 }
+            return delay
+        } catch let error as URLError where error.code == .cannotConnectToHost || error.code == .networkConnectionLost {
+            return nil
+        } catch {
+            return -1
+        }
+    }
+}
+
+public enum Concurrent {
+    /// Runs `work` over `items` keeping `limit` jobs in flight: a slow item never holds up
+    /// the rest, and every result is reported the moment it is ready.
+    public static func forEach<T: Sendable, R: Sendable>(
+        _ items: [T],
+        limit: Int,
+        work: @escaping @Sendable (T) async -> R,
+        onResult: (T, R) async -> Void
+    ) async {
+        await withTaskGroup(of: (T, R).self) { group in
+            var iterator = items.makeIterator()
+            for _ in 0 ..< max(limit, 1) {
+                guard let item = iterator.next() else { break }
+                group.addTask { (item, await work(item)) }
+            }
+            while let (item, result) = await group.next() {
+                await onResult(item, result)
+                if Task.isCancelled { continue }
+                if let next = iterator.next() {
+                    group.addTask { (next, await work(next)) }
+                }
+            }
+        }
     }
 }
 
